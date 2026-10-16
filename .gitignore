@@ -43,3 +43,5 @@ results/val/archive/predictions_*/
 # Out-of-fold per-row predictions (~350 MB). Re-created by
 # src/models/run_step7.py; the csv summaries beside them ARE kept.
 results/val/oof/*.parquet
+# Per-row 2025 test predictions (regenerable by src/evaluation/test_2025.py).
+results/test/pred_*.parquet
