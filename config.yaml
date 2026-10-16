@@ -402,3 +402,36 @@ dl_variants:
     feature_hidden: 64
     sequence_length: 72
     hidden_size: 32                # a smaller recurrent layer
+
+# ---------------------------------------------------------------------------
+# STEP 5b - one principled attempt at the deep models' classification.
+#
+# The validation year is split in two so that settings are not chosen and
+# reported on the same rows:
+#   val_a  first half of 2024  - choose the loss weight and the calibration
+#   val_b  second half of 2024 - the numbers that get reported
+# Early stopping still watches the loss on the WHOLE of 2024, exactly as in
+# step 5, so this split changes what is tuned, not how training stops.
+# Step 6 reuses these dates.
+# ---------------------------------------------------------------------------
+validation_split:
+  val_a_start: "2024-01-01"
+  val_a_end: "2024-06-30"
+  val_b_start: "2024-07-01"
+  val_b_end: "2024-12-31"
+
+dl_cls_fix:
+  base_variant: "reg_hybrid_72h_small"   # the architecture chosen in step 5
+  # 1. how much louder to make the classification part of the loss
+  cls_loss_weights: [2.0, 3.0]           # step 5 used 1.0
+  # a heavier classification loss must not cost the regression side more
+  # than this at any horizon
+  max_rmse_worsening: 0.01               # 1%
+  # 2. class-prior calibration: multiply the three probabilities by these
+  # factors, renormalise, take argmax. Fitted on val_a only, per model and
+  # per horizon.
+  calibration_grid: [0.7, 0.85, 1.0, 1.15, 1.3]
+  calibration_metric: "f1_macro"
+  seeds: [42, 43, 44]
+  archive_dir: "results/val/archive"
+  results_csv: "results/val/dl_cls_fix.csv"

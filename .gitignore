@@ -38,3 +38,5 @@ desktop.ini
 # src/models/baselines.py and src/models/train_ml.py. The metrics csv,
 # feature importances and plots next to them ARE kept in git.
 results/val/predictions/
+# Archived per-row predictions (kept on disk for restore, not in git).
+results/val/archive/predictions_*/

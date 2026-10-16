@@ -1,0 +1,7 @@
+model,cls_loss_weight,seeds,val_a_mean_f1,val_a_rmse_24,rmse_ok,chosen,note
+bilstm,1.0,"42,43,44",0.87059,0.67145,True,True,step 5 model
+bilstm,2.0,42,0.86758,0.69126,False,False,worst RMSE change +11.1%
+bilstm,3.0,42,0.86553,0.70174,False,False,worst RMSE change +19.0%
+cnn_lstm,1.0,"42,43,44",0.87724,0.6689,True,True,step 5 model
+cnn_lstm,2.0,42,0.87638,0.68027,False,False,worst RMSE change +11.3%
+cnn_lstm,3.0,42,0.87678,0.69132,False,False,worst RMSE change +16.9%

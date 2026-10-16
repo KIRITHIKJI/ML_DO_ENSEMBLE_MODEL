@@ -280,7 +280,10 @@ def train_model(name, settings, train_data, val_data, reg_tr, cls_tr,
     arch = architecture_overrides(settings, name)
     model = MODELS[name](S.N_CHANNELS, n_stations, cfg=arch,
                          n_features=n_features).to(device)
-    loss_fn = MultiTaskLoss(class_weights_from_train(cls_tr)).to(device)
+    # the variant may raise the weight of the classification loss (step 5b)
+    loss_fn = MultiTaskLoss(class_weights_from_train(cls_tr),
+                            cls_weight=settings["classification_loss_weight"]
+                            ).to(device)
     optimizer = make_optimizer(model, settings)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, factor=DL["lr_factor"], patience=DL["lr_patience"])
@@ -294,6 +297,7 @@ def train_model(name, settings, train_data, val_data, reg_tr, cls_tr,
         print(f"  {count_parameters(model):,} parameters | optimizer "
               f"{settings.get('optimizer', 'adam')} lr {settings['learning_rate']}"
               f" | dropout {arch.get('dropout', 'default')}"
+              f" | cls loss weight {settings['classification_loss_weight']}"
               f" | batch {batch_size} | patience {patience}")
 
     history, best = [], {"val_loss": np.inf, "epoch": 0, "state": None}
