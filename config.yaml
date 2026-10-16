@@ -536,3 +536,45 @@ step7:
 
 # Written by src/evaluation/step7_report.py from its pre-set decision rule.
 final_system: "stacking"
+
+# ---------------------------------------------------------------------------
+# STEP 8 - the one and only evaluation on 2025.
+#
+# Everything here is decided and frozen BEFORE a single 2025 target is read.
+# ---------------------------------------------------------------------------
+final_test:
+  # Step 7 found that a tau tuned to sit exactly on the 2% budget lands at
+  # 2.3-2.5% out of sample, because the threshold that just fits on
+  # five-sixths of a year will not quite fit on the rest. So the budget used
+  # to CHOOSE tau is tightened by a safety margin, and the number the system
+  # is judged against stays 2%.
+  target_false_alarm_rate: 0.020      # what the system promises
+  safety_margin: 0.002                # headroom taken off when choosing tau
+  select_false_alarm_rate: 0.018      # = target - margin, the budget used
+
+  thresholds_file: "models/ensemble/warning_thresholds.json"
+  ablation_thresholds_file: "models/ensemble/ablation_thresholds.json"
+  frozen_file: "FROZEN.md"
+
+  stage2_dir: "models/stage2"          # members retrained on 2023+2024
+  stage3_dir: "models/final"           # members retrained on all three years
+  ablation_dir: "models/ablation"
+  results_dir: "results/test"
+  plots_dir: "results/test/plots"
+
+  # The best single model, chosen on 2024 and frozen for the comparison.
+  best_single:
+    regression: "lightgbm"
+    classification: "xgboost"
+
+  # The input sets for the multimodal ablation (groups from
+  # data/processed/feature_groups.json).
+  ablation_sets:
+    W: ["water", "time", "station"]
+    W+M: ["water", "time", "station", "weather"]
+    W+M+A: ["water", "time", "station", "weather", "air"]
+
+  # A low-DO event starts when DO drops below the threshold after at least
+  # this many hours at or above it; lead time is measured against that hour.
+  event_recovery_hours: 24
+  lead_time_window_hours: 24
