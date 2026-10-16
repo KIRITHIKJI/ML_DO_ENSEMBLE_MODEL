@@ -25,6 +25,14 @@ paths:
   reports: "reports"
   models: "models"
   data_report: "reports/data_report.md"
+  # step 2 outputs
+  hourly: "data/interim/hourly.parquet"            # cleaned hourly panel
+  dropped_vars: "data/interim/dropped_variables.csv"
+  train: "data/processed/train.parquet"
+  val: "data/processed/val.parquet"
+  test: "data/processed/test.parquet"
+  feature_groups: "data/processed/feature_groups.json"
+  features_report: "reports/features_report.md"
 
 # Old project (A:\ML_MAIN). READ-ONLY: we only copy out of here, never write.
 legacy:
@@ -122,3 +130,77 @@ download:
     open_meteo_air: "https://air-quality-api.open-meteo.com/v1/air-quality"
 
   user_agent: "do-early-warning-student-project/2.0"
+
+# ---------------------------------------------------------------------------
+# Cleaning settings (src/data/clean.py)
+# ---------------------------------------------------------------------------
+cleaning:
+  resample_rule: "h"              # 15-min sensor readings -> hourly means, UTC
+
+  # Physically impossible values are set to NaN. `min_exclusive: true` means
+  # the value must be strictly greater than `min` (conductivity cannot be 0).
+  # A missing `min`/`max` means "no bound on that side".
+  valid_ranges:
+    do_mgl:         {min: 0.0,   max: 20.0}
+    water_temp_c:   {min: -1.0,  max: 40.0}
+    spec_cond_uscm: {min: 0.0,   max: 50000.0, min_exclusive: true}
+    ph:             {min: 3.0,   max: 11.0}
+    turbidity_fnu:  {min: 0.0}
+    discharge_cfs:  {min: 0.0}
+
+  # Obvious sensor spikes: an hourly jump bigger than `max_change` that
+  # reverses within `reversal_hours` is a sensor artefact, not a real river.
+  spike:
+    columns: ["do_mgl"]
+    max_change: 4.0               # mg/L from one hour to the next
+    reversal_hours: 2
+
+  # Only short gaps are filled, by linear interpolation. Longer gaps stay NaN
+  # so a model never trains on invented data.
+  max_gap_fill_hours: 3
+
+  # A water variable that is more than this fraction missing at a station
+  # (measured on the TRAIN years only, so 2024/2025 never affect the choice)
+  # is dropped for that station: the column stays but is all-NaN.
+  drop_variable_if_missing_above: 0.50
+
+  # Suffix of the 0/1 columns recording where a value was missing BEFORE
+  # any filling.
+  mask_suffix: "_was_missing"
+
+# ---------------------------------------------------------------------------
+# Feature settings (src/features/build_features.py)
+#
+# Every feature at time t uses only data at times <= t, and is computed
+# per station. No statistic is ever computed over the whole dataset.
+# ---------------------------------------------------------------------------
+features:
+  water_vars: ["do_mgl", "water_temp_c", "spec_cond_uscm", "ph",
+               "turbidity_fnu", "discharge_cfs"]
+  water_lags: [1, 2, 3, 6, 12, 24, 48]          # hours
+  water_roll_windows: [6, 24, 72]               # hours
+  water_roll_stats: ["mean", "min", "max", "std"]
+  water_diffs: [1, 6, 24]                       # change over N hours
+
+  # DO-specific features
+  do_swing_window: 24           # daily swing = 24 h max - 24 h min
+  do_low_hours_window: 24       # hours with DO < Low in the last 24 h
+  hours_since_low_cap: 720      # cap on "hours since DO was last < Low"
+  do_saturation: true           # DO / solubility at the current water temp
+
+  # Weather
+  weather_lags: [1, 6, 24]
+  weather_roll24_vars: ["temperature_2m", "shortwave_radiation",
+                        "wind_speed_10m"]
+  weather_roll24_window: 24
+  precip_var: "precipitation"
+  precip_sum_windows: [24, 72, 168]             # 1 day, 3 days, 1 week
+  rain_threshold_mm: 1.0                        # "it rained" means > this
+  hours_since_rain_cap: 720
+
+  # Air quality
+  air_roll_window: 24
+
+  # Rolling windows are not full for the first hours of a station, so those
+  # rows are dropped.
+  warmup_hours: 72
