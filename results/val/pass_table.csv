@@ -3,31 +3,47 @@ linear,regression,6,True,skill +0.579
 random_forest,regression,6,True,skill +0.580
 xgboost,regression,6,True,skill +0.630
 lightgbm,regression,6,True,skill +0.637
+bilstm,regression,6,True,skill +0.547
+cnn_lstm,regression,6,True,skill +0.515
 linear,classification,6,True,"macroF1 0.888, Low recall 0.926"
 random_forest,classification,6,True,"macroF1 0.896, Low recall 0.923"
 xgboost,classification,6,True,"macroF1 0.909, Low recall 0.921"
 lightgbm,classification,6,True,"macroF1 0.909, Low recall 0.918"
+bilstm,classification,6,True,"macroF1 0.873, Low recall 0.901"
+cnn_lstm,classification,6,True,"macroF1 0.880, Low recall 0.909"
 linear,regression,12,True,skill +0.617
 random_forest,regression,12,True,skill +0.630
 xgboost,regression,12,True,skill +0.644
 lightgbm,regression,12,True,skill +0.645
+bilstm,regression,12,True,skill +0.570
+cnn_lstm,regression,12,True,skill +0.564
 linear,classification,12,True,"macroF1 0.881, Low recall 0.923"
 random_forest,classification,12,True,"macroF1 0.898, Low recall 0.918"
 xgboost,classification,12,True,"macroF1 0.904, Low recall 0.916"
 lightgbm,classification,12,True,"macroF1 0.903, Low recall 0.916"
+bilstm,classification,12,True,"macroF1 0.870, Low recall 0.878"
+cnn_lstm,classification,12,True,"macroF1 0.876, Low recall 0.913"
 linear,regression,24,True,skill +0.080
 random_forest,regression,24,True,skill +0.096
 xgboost,regression,24,True,skill +0.096
 lightgbm,regression,24,True,skill +0.106
+bilstm,regression,24,True,skill +0.050
+cnn_lstm,regression,24,True,skill +0.036
 linear,classification,24,False,macroF1 0.872 <= persistence 0.879
 random_forest,classification,24,True,"macroF1 0.891, Low recall 0.916"
 xgboost,classification,24,True,"macroF1 0.892, Low recall 0.914"
 lightgbm,classification,24,True,"macroF1 0.891, Low recall 0.913"
+bilstm,classification,24,False,macroF1 0.872 <= persistence 0.879
+cnn_lstm,classification,24,False,macroF1 0.876 <= persistence 0.879
 linear,regression,48,True,skill +0.119
 random_forest,regression,48,True,skill +0.140
 xgboost,regression,48,True,skill +0.146
 lightgbm,regression,48,True,skill +0.156
+bilstm,regression,48,True,skill +0.088
+cnn_lstm,regression,48,True,skill +0.063
 linear,classification,48,True,"macroF1 0.828, Low recall 0.881"
 random_forest,classification,48,True,"macroF1 0.849, Low recall 0.884"
 xgboost,classification,48,True,"macroF1 0.852, Low recall 0.881"
 lightgbm,classification,48,True,"macroF1 0.849, Low recall 0.878"
+bilstm,classification,48,True,"macroF1 0.836, Low recall 0.880"
+cnn_lstm,classification,48,True,"macroF1 0.840, Low recall 0.888"

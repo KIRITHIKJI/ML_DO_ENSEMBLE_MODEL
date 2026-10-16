@@ -43,7 +43,11 @@ PC = CFG["pass_criteria"]
 HORIZONS = CFG["horizons"]
 CLASS_NAMES = CFG["target"]["class_names"]
 BASELINE = "persistence"
-MODEL_ORDER = ["persistence", "linear", "random_forest", "xgboost", "lightgbm"]
+MODEL_ORDER = ["persistence", "linear", "random_forest", "xgboost",
+               "lightgbm", "bilstm", "cnn_lstm"]
+# This report is about step 3 only. Step 4 adds the deep models to the same
+# metrics files, so they are filtered out here and shown in step4_ml_report.
+STEP3_MODELS = ["persistence", "linear", "random_forest", "xgboost", "lightgbm"]
 
 
 def metrics_path(task):
@@ -51,8 +55,10 @@ def metrics_path(task):
                         f"metrics_{task}.csv")
 
 
-def load_metrics(task):
+def load_metrics(task, keep=None):
     df = pd.read_csv(metrics_path(task))
+    if keep is not None:
+        df = df[df["model"].isin(keep)]
     df["order"] = df["model"].map({m: i for i, m in enumerate(MODEL_ORDER)})
     return df.sort_values(["horizon", "order"]).drop(columns="order")
 
@@ -188,8 +194,8 @@ def plot_rmse_vs_horizon(reg):
 # main
 # ---------------------------------------------------------------------------
 def main():
-    reg = load_metrics("regression")
-    cls = load_metrics("classification")
+    reg = load_metrics("regression", STEP3_MODELS)
+    cls = load_metrics("classification", STEP3_MODELS)
     flags = pass_flags(reg, cls)
     forward = goes_forward(flags)
 

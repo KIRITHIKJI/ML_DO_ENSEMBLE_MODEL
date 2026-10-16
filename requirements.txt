@@ -19,8 +19,24 @@ scikit-learn==1.4.2        # RF, LinearRegression, LogisticRegression, metrics
 xgboost==2.0.3
 lightgbm==4.3.0
 
-# --- deep learning (CPU) -------------------------------------------
-torch==2.2.2               # BiLSTM, CNN-LSTM. CPU wheel on Windows.
+# --- deep learning -------------------------------------------------
+# Plain `pip install -r requirements.txt` gives the CPU build, which is
+# correct on a machine without an NVIDIA card - the project runs either way
+# (config.yaml has device: "auto").
+#
+# To train the BiLSTM / CNN-LSTM on an NVIDIA GPU, replace it with the CUDA
+# build of the SAME version afterwards:
+#
+#     pip uninstall -y torch
+#     pip install torch==2.2.2 --index-url https://download.pytorch.org/whl/cu121
+#
+# cu121 is the right wheel for any driver from CUDA 12.1 upwards - a newer
+# driver (e.g. CUDA 13.1) runs it fine, because the CUDA driver is backward
+# compatible with older runtimes. Verify with:
+#     python -c "import torch; print(torch.cuda.is_available())"
+# This project was trained on an RTX 3050 Laptop GPU (6 GB) with
+# torch 2.2.2+cu121.
+torch==2.2.2               # BiLSTM, CNN-LSTM
 
 # --- signal decomposition (proposed method) ------------------------
 EMD-signal==1.6.4          # imported as `PyEMD`; provides CEEMDAN

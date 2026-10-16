@@ -257,6 +257,23 @@ models:
     categorical_features: ["station_id"]
     classifier_class_weight: "balanced"
 
+
+  # --- deep learning architectures (used by src/models/dl_models.py) ---
+  bilstm:
+    hidden_size: 64
+    num_layers: 2
+    bidirectional: true
+    dropout: 0.2
+    dense_size: 64
+  cnn_lstm:
+    conv_channels: [32, 64]
+    kernel_size: 3
+    pool_size: 2
+    hidden_size: 64
+    num_layers: 1
+    dropout: 0.2
+    dense_size: 64
+
 # ---------------------------------------------------------------------------
 # Pass criteria - FIXED BEFORE ANY RESULTS WERE SEEN.
 #
@@ -276,3 +293,38 @@ pass_criteria:
     not_worse_on: "recall_Low"           # at least as high as persistence
     recall_tolerance: 0.0                # no slack allowed
   min_horizons_passed: 3                 # out of the 4 horizons
+
+# ---------------------------------------------------------------------------
+# Deep-learning settings (src/models/sequences.py, dl_models.py, train_dl.py)
+#
+# One network per architecture does BOTH tasks and ALL horizons at once
+# (multi-task): 4 regression outputs and 4 x 3 classification logits.
+# ---------------------------------------------------------------------------
+deep_learning:
+  device: "auto"              # "auto" -> cuda when a GPU is there, else cpu
+  mixed_precision: true       # torch.autocast + GradScaler, GPU only
+  sequence_length: 48         # the last 48 hours, t-47 .. t
+  station_embedding_dim: 8
+  batch_size: 512
+  learning_rate: 0.001
+  max_epochs: 30
+  early_stopping_patience: 5  # epochs without a better validation loss
+  lr_patience: 2              # ReduceLROnPlateau
+  lr_factor: 0.5
+  grad_clip: 1.0
+  classification_loss_weight: 1.0   # loss = mse + this * cross_entropy
+  num_workers: 0              # Windows: workers would be slower, not faster
+  pin_memory: true
+  max_minutes_per_epoch: 10   # stop and report if an epoch is slower than this
+
+  # The raw hourly variables the sequences are built from. These are NOT the
+  # 211 engineered features: a recurrent network is supposed to learn the
+  # lags and rolling statistics itself.
+  water_vars: ["do_mgl", "water_temp_c", "spec_cond_uscm", "ph",
+               "turbidity_fnu", "discharge_cfs"]
+  use_missing_flags: true     # the six <var>_was_missing columns
+  use_do_saturation: true     # DO / solubility at the current water temp
+  use_time_features: true     # hour and day-of-year as sin/cos
+
+  dirs:
+    dl_models: "models/dl"
