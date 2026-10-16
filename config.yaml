@@ -1,0 +1,124 @@
+# ============================================================================
+# config.yaml - the ONE place where every path, date, threshold and seed lives.
+# No script in this project should hard-code any of these values.
+# Load it with:  from src.config import load_config  (or yaml.safe_load)
+# ============================================================================
+
+project:
+  name: "DO Early Warning V2"
+  description: "Early warning of low dissolved oxygen in US rivers (multimodal)"
+
+# ---------------------------------------------------------------------------
+# Paths. All relative to the project root; scripts are always run from there
+# (e.g. python -m src.data.download).
+# ---------------------------------------------------------------------------
+paths:
+  data_raw: "data/raw"
+  water: "data/raw/water"           # USGS sensor readings (15-min, UTC)
+  weather: "data/raw/weather"       # ERA5 via Open-Meteo (hourly, UTC)
+  air: "data/raw/air"               # CAMS via Open-Meteo (hourly, UTC)
+  stations: "data/raw/stations.csv" # one row per station we keep
+  candidates: "data/raw/station_candidates.csv"  # stations we screened
+  data_interim: "data/interim"
+  data_processed: "data/processed"
+  results: "results"
+  reports: "reports"
+  models: "models"
+  data_report: "reports/data_report.md"
+
+# Old project (A:\ML_MAIN). READ-ONLY: we only copy out of here, never write.
+legacy:
+  root: "A:/ML_MAIN/water-early-warning"
+  raw_2023_2024: "A:/ML_MAIN/water-early-warning/data/raw"
+  raw_2025: "A:/ML_MAIN/water-early-warning/data/raw_2025"
+
+# ---------------------------------------------------------------------------
+# Time period and the fixed chronological split.
+# 2025 is the final hold-out: it must NOT influence any decision (tuning,
+# feature choice, model selection) until the very last step.
+# ---------------------------------------------------------------------------
+period:
+  start: "2023-01-01"
+  end: "2025-12-31"
+
+split:
+  train_years: [2023]
+  val_years: [2024]
+  test_years: [2025]
+
+# ---------------------------------------------------------------------------
+# Target definition.
+# Regression target: do_mgl. Classification: Low / Medium / Good.
+#   Low    : DO <  5 mg/L
+#   Medium : 5 <= DO <= 7 mg/L
+#   Good   : DO >  7 mg/L
+# ---------------------------------------------------------------------------
+target:
+  column: "do_mgl"
+  thresholds:
+    low: 5.0        # below this = Low
+    good: 7.0       # above this = Good
+  class_names: ["Low", "Medium", "Good"]
+
+# Forecast horizons, in hours ahead.
+horizons: [6, 12, 24, 48]
+
+# A "low-DO event" starts when DO drops below `low` after at least
+# `event_recovery_hours` of DO at or above it. Used by check_data.py.
+event:
+  recovery_hours: 24
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+seed: 42
+
+# ---------------------------------------------------------------------------
+# Data download settings (src/data/download.py)
+# ---------------------------------------------------------------------------
+download:
+  target_stations: 30         # how many stations we want in total
+  min_do_coverage: 0.80       # DO coverage required in EACH year
+  max_new_candidates: 250     # how many new stations we are willing to screen
+  candidates_per_state: 8     # how many candidates per state enter that list
+  per_state_cap: 3            # at most this many NEW stations kept per state
+  # The coverage rule is applied to the stations inherited from the old
+  # project as well. A station whose DO sensor died (e.g. 8% coverage in 2025)
+  # cannot be part of an honest 2025 test, so it is dropped and replaced.
+  apply_rules_to_legacy: true
+  retries: 4
+  timeout: 120
+  sleep_between_calls: 1.0    # be polite to the free Open-Meteo API
+
+  # USGS instantaneous-value parameter codes -> our column names
+  usgs_params:
+    "00300": "do_mgl"           # dissolved oxygen, mg/L
+    "00010": "water_temp_c"     # water temperature, degC
+    "00095": "spec_cond_uscm"   # specific conductance, uS/cm at 25C
+    "00400": "ph"               # pH
+    "63680": "turbidity_fnu"    # turbidity, FNU
+    "00060": "discharge_cfs"    # discharge / streamflow, ft3/s
+
+  # A station is unusable without these three.
+  required_params: ["00300", "00010", "00095"]
+
+  # Searched in this order. Warm southern and urban rivers first: low-oxygen
+  # episodes are far more common there.
+  states: ["FL", "GA", "LA", "TX", "SC", "NC", "AL", "MS", "IL", "IN", "OH",
+           "MD", "VA", "PA", "TN", "KY", "MO", "AR", "OK", "WI", "MN", "IA",
+           "NJ", "NY", "DE", "WV", "CA", "AZ", "OR", "WA"]
+
+  weather_vars: ["temperature_2m", "relative_humidity_2m", "precipitation",
+                 "surface_pressure", "wind_speed_10m", "shortwave_radiation",
+                 "soil_moisture_0_to_7cm", "et0_fao_evapotranspiration"]
+
+  air_vars: ["pm10", "pm2_5", "carbon_monoxide", "nitrogen_dioxide",
+             "sulphur_dioxide", "ozone", "aerosol_optical_depth", "dust"]
+
+  urls:
+    usgs_site: "https://waterservices.usgs.gov/nwis/site/"
+    usgs_iv: "https://waterservices.usgs.gov/nwis/iv/"
+    open_meteo_weather: "https://archive-api.open-meteo.com/v1/archive"
+    open_meteo_air: "https://air-quality-api.open-meteo.com/v1/air-quality"
+
+  user_agent: "do-early-warning-student-project/2.0"

@@ -1,0 +1,38 @@
+# Dissolved-oxygen early warning (V2) - dependencies
+# Windows + Python 3.10, CPU only (no GPU / no CUDA).
+#
+#     pip install -r requirements.txt
+#
+# Versions are pinned so results stay reproducible. torch comes from PyPI,
+# which on Windows is already the CPU build - no extra index URL needed.
+
+# --- data handling -------------------------------------------------
+pandas==2.1.4
+numpy==1.26.4
+pyarrow==15.0.2            # parquet engine for data/processed
+pyyaml==6.0.1              # reads config.yaml
+requests==2.32.3           # USGS + Open-Meteo downloads
+tqdm==4.66.4               # progress bars
+
+# --- classical ML --------------------------------------------------
+scikit-learn==1.4.2        # RF, LinearRegression, LogisticRegression, metrics
+xgboost==2.0.3
+lightgbm==4.3.0
+
+# --- deep learning (CPU) -------------------------------------------
+torch==2.2.2               # BiLSTM, CNN-LSTM. CPU wheel on Windows.
+
+# --- signal decomposition (proposed method) ------------------------
+EMD-signal==1.6.4          # imported as `PyEMD`; provides CEEMDAN
+
+# --- figures and explanations --------------------------------------
+matplotlib==3.8.4
+seaborn==0.13.2
+shap==0.45.0
+
+# --- app -----------------------------------------------------------
+streamlit==1.33.0
+plotly==5.22.0
+
+# --- tests ---------------------------------------------------------
+pytest==8.2.0

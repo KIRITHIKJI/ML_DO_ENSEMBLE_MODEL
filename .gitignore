@@ -1,0 +1,34 @@
+# ── downloaded and derived data (re-creatable with src/data/download.py) ──
+data/raw/
+data/interim/
+data/processed/
+
+# ── trained model weights ────────────────────────────────────────────
+models/*.pt
+models/*.pth
+models/*.pkl
+models/*.joblib
+models/*.txt
+models/*.json
+
+# ── python ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ── scratch ──────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ── local tool / editor settings ─────────────────────────────────────
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+desktop.ini
