@@ -135,30 +135,31 @@ def main():
     else:
         out.append("None.\n")
 
-    out.append("\n## Known caveat: short-gap interpolation\n")
+    out.append("\n## Gap filling uses the past only\n")
     out.append(f"Cleaning fills water-variable gaps of up to "
-               f"{CFG['cleaning']['max_gap_fill_hours']} h by linear "
-               "interpolation, as specified. Linear interpolation looks at the "
-               "reading on *both* sides of a gap, so a filled input value at "
-               "time t can contain up to "
+               f"{CFG['cleaning']['max_gap_fill_hours']} h by carrying the "
+               "last observed value FORWARD "
+               f"(`cleaning.gap_fill_method: "
+               f"{CFG['cleaning']['gap_fill_method']}`). Linear interpolation "
+               "was used at first, but it averages the readings on both sides "
+               "of a gap, so a filled input value at time t would have "
+               "contained up to "
                f"{CFG['cleaning']['max_gap_fill_hours']} h of future sensor "
-               "information. This affects inputs only: the targets are taken "
-               "from observed values (`*_was_missing == 0`), and the "
-               "`<var>_was_missing` columns mark every filled hour, so the "
-               "effect can be measured or the filling switched off "
-               "(`cleaning.max_gap_fill_hours: 0`). It touches about "
+               "information. A forward fill is exactly what a real-time system "
+               "would have at time t. Every filled hour is still marked by "
+               "`<var>_was_missing = 1`; this affects about "
                f"{100 * tr['do_mgl' + CFG['cleaning']['mask_suffix']].mean():.1f}% "
                "of training rows for DO.\n")
 
-    out.append("\n## Note on negative discharge\n")
-    out.append("The cleaning rule `discharge_cfs >= 0` removes about 72,000 "
-               "hourly values, almost all of them at tidal stations (Savannah "
-               "River, Middle River, Waccamaw, Murderkill), where a negative "
-               "value is the real tide pushing water upstream rather than a "
-               "sensor fault. Those hours are marked by "
-               "`discharge_cfs_was_missing = 1`. To keep them instead, set "
-               "`cleaning.valid_ranges.discharge_cfs.min: null` in config.yaml "
-               "and re-run the cleaning step.\n")
+    out.append("\n## Negative discharge is kept\n")
+    out.append("At tidal stations (Savannah River, Middle River, Waccamaw, "
+               "Murderkill) a negative discharge is the real tide pushing "
+               "water upstream, not a sensor fault, and tidal flushing is "
+               "physically linked to DO. The lower bound on `discharge_cfs` is "
+               "therefore `null` in config.yaml. That keeps about 72,000 "
+               "hourly values an earlier version discarded: discharge is now "
+               f"{100 * tr['discharge_cfs'].isna().mean():.1f}% missing in the "
+               "training split instead of 22%.\n")
 
     path = project_path(P["features_report"])
     os.makedirs(os.path.dirname(path), exist_ok=True)

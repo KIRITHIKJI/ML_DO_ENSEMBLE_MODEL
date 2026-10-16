@@ -4,7 +4,7 @@ data/interim/
 data/processed/
 
 # ── trained model weights ────────────────────────────────────────────
-models/*.pt
+models/**/*
 models/*.pth
 models/*.pkl
 models/*.joblib
@@ -32,3 +32,9 @@ temp/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ── large regenerable model output ───────────────────────────────────
+# Per-row validation predictions (~120 MB). Re-created by
+# src/models/baselines.py and src/models/train_ml.py. The metrics csv,
+# feature importances and plots next to them ARE kept in git.
+results/val/predictions/

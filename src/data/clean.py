@@ -13,8 +13,9 @@ For every station in data/raw/stations.csv:
      hour that reverses within 2 hours.
   4. Record, for every water variable, a 0/1 column `<var>_was_missing`
      BEFORE any filling.
-  5. Fill only short gaps (<= 3 h) by linear interpolation. Longer gaps stay
-     NaN, so nothing is invented.
+  5. Fill only short gaps (<= 3 h) by carrying the last observed value
+     forward. Longer gaps stay NaN, so nothing is invented, and a filled
+     value at time t never contains information from after t.
   6. Drop a water variable at a station if it is more than 50% missing in the
      TRAIN years (2023). The column stays but is all NaN, and the drop is
      logged - 2024 and 2025 never influence this decision.
@@ -108,28 +109,30 @@ def remove_spikes(df):
 
 def fill_short_gaps(df, cols):
     """
-    Linear interpolation, but only across gaps of at most
-    `max_gap_fill_hours` hours. Longer gaps are put back to NaN.
+    Fill short gaps by carrying the LAST OBSERVED value forward, for at most
+    `max_gap_fill_hours` hours. Longer gaps stay NaN.
+
+    Why forward fill and not interpolation: interpolation averages the
+    readings on both sides of a gap, so the filled value at time t would
+    contain information from after t. A real early-warning system at time t
+    only has the past, and the last known reading is exactly what it would
+    use. Forward fill therefore cannot leak the future.
     """
     limit = int(CL["max_gap_fill_hours"])
+    method = CL.get("gap_fill_method", "ffill")
+    if method != "ffill":
+        raise ValueError(f"cleaning.gap_fill_method must be 'ffill', got {method!r}")
+    if limit <= 0:
+        return df
     for c in cols:
         if c not in df.columns:
             continue
         col = df[c]
         if col.notna().sum() == 0:
             continue
-        # `limit_area="inside"` keeps the series from being extended before
-        # the first or after the last real reading.
-        filled = col.interpolate(method="time", limit=limit,
-                                 limit_area="inside", limit_direction="both")
-        # Interpolation with a limit still fills the first `limit` hours of a
-        # long gap. Find gaps longer than the limit and blank them out again.
-        isna = col.isna()
-        group = (~isna).cumsum()                   # one id per run of NaNs
-        gap_len = isna.groupby(group).transform("sum")
-        too_long = isna & (gap_len > limit)
-        filled[too_long] = np.nan
-        df[c] = filled
+        # ffill with a limit only carries a value forward `limit` rows, so a
+        # longer gap keeps its NaNs from hour limit+1 onwards automatically.
+        df[c] = col.ffill(limit=limit)
     return df
 
 

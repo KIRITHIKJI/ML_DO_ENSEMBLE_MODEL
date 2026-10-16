@@ -97,6 +97,57 @@ def test_every_row_up_to_t_is_unchanged_not_just_t():
 # ---------------------------------------------------------------------------
 # 2.5 per station: one station's features never depend on another's data
 # ---------------------------------------------------------------------------
+def test_gap_filling_does_not_use_future_values():
+    """
+    The cleaning step fills gaps of up to 3 h. Carrying the last observed
+    value forward can only use the past; interpolating between both sides of
+    a gap would not. Changing the reading AFTER a gap must leave the filled
+    values inside that gap untouched.
+    """
+    from src.data import clean as C
+
+    idx = pd.date_range("2023-01-01", periods=12, freq="h")
+    base = pd.DataFrame({"do_mgl": [6.0, 6.5, np.nan, np.nan, 8.0,
+                                    7.0, 7.0, 7.0, 7.0, 7.0, 7.0, 7.0]},
+                        index=idx)
+    filled = C.fill_short_gaps(base.copy(), ["do_mgl"])["do_mgl"]
+
+    # the gap is filled with the last value BEFORE it, not a blend
+    assert filled.iloc[2] == pytest.approx(6.5)
+    assert filled.iloc[3] == pytest.approx(6.5)
+
+    # changing the value after the gap must not move the filled values
+    moved = base.copy()
+    moved.loc[idx[4], "do_mgl"] = 200.0
+    filled_moved = C.fill_short_gaps(moved, ["do_mgl"])["do_mgl"]
+    assert filled_moved.iloc[2] == pytest.approx(filled.iloc[2])
+    assert filled_moved.iloc[3] == pytest.approx(filled.iloc[3])
+
+
+def test_gaps_longer_than_the_limit_stay_missing():
+    from src.data import clean as C
+
+    limit = CFG["cleaning"]["max_gap_fill_hours"]
+    idx = pd.date_range("2023-01-01", periods=12, freq="h")
+    col = pd.Series([6.0] + [np.nan] * 6 + [7.0] * 5, index=idx)
+    filled = C.fill_short_gaps(pd.DataFrame({"do_mgl": col}), ["do_mgl"])["do_mgl"]
+    # only the first `limit` hours of the long gap are carried forward
+    assert filled.iloc[1:1 + limit].notna().all()
+    assert filled.iloc[1 + limit:7].isna().all()
+
+
+def test_cleaning_keeps_negative_discharge():
+    """Negative discharge is the tide pushing water upstream, not a fault."""
+    from src.data import clean as C
+
+    idx = pd.date_range("2023-01-01", periods=4, freq="h")
+    df = pd.DataFrame({"discharge_cfs": [500.0, -500.0, -12000.0, 300.0]},
+                      index=idx)
+    out, removed = C.apply_ranges(df.copy())
+    assert out["discharge_cfs"].notna().all()
+    assert "discharge_cfs" not in removed
+
+
 def test_station_a_features_do_not_depend_on_station_b():
     a = fake_station(seed=2)
     b = fake_station(seed=3)
