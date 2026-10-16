@@ -317,6 +317,12 @@ deep_learning:
   pin_memory: true
   max_minutes_per_epoch: 10   # stop and report if an epoch is slower than this
 
+  # Defaults that the step-5 variants (dl_variants:) override.
+  optimizer: "adam"               # "adam" or "adamw"
+  weight_decay: 0.0               # AdamW only
+  use_engineered_features: false  # the 211 step-2 features at time t
+  feature_hidden: 64              # size of the dense layer that reads them
+
   # The raw hourly variables the sequences are built from. These are NOT the
   # 211 engineered features: a recurrent network is supposed to learn the
   # lags and rolling statistics itself.
@@ -328,3 +334,71 @@ deep_learning:
 
   dirs:
     dl_models: "models/dl"
+
+# ---------------------------------------------------------------------------
+# STEP 5 - tuning the deep models on validation (2024).
+#
+# Each variant is a set of overrides on top of `deep_learning:` and the
+# architecture block. They are tried in the order listed, each one adding a
+# change to the one before it, so the table in the report shows what each
+# change was worth on its own.
+#
+#   step4                  the step-4 settings, re-run as the reference
+#   reg                    (a) more dropout, AdamW with weight decay, lower
+#                              learning rate, shorter patience
+#   reg_hybrid             (b) + the 211 engineered features at time t
+#   reg_hybrid_72h         (c) + a 72-hour window instead of 48
+#   reg_hybrid_72h_small   (d) + hidden size 32 instead of 64
+# ---------------------------------------------------------------------------
+dl_search:
+  variants: ["step4", "reg", "reg_hybrid", "reg_hybrid_72h",
+             "reg_hybrid_72h_small"]
+  results_csv: "results/val/dl_search.csv"
+  archive_dir: "results/val/archive"
+  # The chosen configuration is retrained with these seeds and the three
+  # predictions are averaged.
+  final_seeds: [42, 43, 44]
+  # Picked by VALIDATION LOSS, the training objective itself, rather than by
+  # any single metric - optimising directly on one metric is how you end up
+  # with a model that is good at that metric and nothing else.
+  select_by: "val_loss"
+
+dl_variants:
+  step4: {}                        # no overrides: exactly what step 4 ran
+
+  reg:
+    dropout: 0.3                   # also applied to the dense layer
+    optimizer: "adamw"
+    weight_decay: 0.0001
+    learning_rate: 0.0005
+    early_stopping_patience: 4
+
+  reg_hybrid:
+    dropout: 0.3
+    optimizer: "adamw"
+    weight_decay: 0.0001
+    learning_rate: 0.0005
+    early_stopping_patience: 4
+    use_engineered_features: true  # the 211 step-2 features at time t
+    feature_hidden: 64             # Linear(211 -> 64) + ReLU + dropout
+
+  reg_hybrid_72h:
+    dropout: 0.3
+    optimizer: "adamw"
+    weight_decay: 0.0001
+    learning_rate: 0.0005
+    early_stopping_patience: 4
+    use_engineered_features: true
+    feature_hidden: 64
+    sequence_length: 72            # three days of history instead of two
+
+  reg_hybrid_72h_small:
+    dropout: 0.3
+    optimizer: "adamw"
+    weight_decay: 0.0001
+    learning_rate: 0.0005
+    early_stopping_patience: 4
+    use_engineered_features: true
+    feature_hidden: 64
+    sequence_length: 72
+    hidden_size: 32                # a smaller recurrent layer

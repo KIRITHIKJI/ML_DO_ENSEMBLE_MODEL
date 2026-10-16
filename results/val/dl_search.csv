@@ -1,0 +1,11 @@
+model,variant,sequence_length,engineered_features,dropout,optimizer,learning_rate,hidden_size,parameters,epochs,best_epoch,val_loss,rmse_24,r2_24,skill_24,f1_macro_24,recall_low_24,minutes,seconds_per_epoch,chosen
+bilstm,step4,48,False,default,adam,0.001,default,160064,7,2,0.36857,0.6991,0.9432,0.0505,0.872,0.9012,2.85,22.4,False
+cnn_lstm,step4,48,False,default,adam,0.001,default,48640,9,4,0.34453,0.6931,0.9442,0.0586,0.8739,0.8996,2.87,18.0,False
+bilstm,reg,48,False,0.3,adamw,0.0005,default,160064,6,2,0.37682,0.712,0.9411,0.033,0.8705,0.8926,2.8,26.2,False
+cnn_lstm,reg,48,False,0.3,adamw,0.0005,default,48640,8,4,0.35106,0.7092,0.9416,0.0368,0.873,0.9005,2.96,20.8,False
+bilstm,reg_hybrid,48,True,0.3,adamw,0.0005,default,177728,6,2,0.35878,0.6809,0.9461,0.0752,0.8719,0.8918,2.79,26.0,False
+cnn_lstm,reg_hybrid,48,True,0.3,adamw,0.0005,default,66304,7,3,0.33329,0.681,0.9461,0.0751,0.8767,0.9017,3.02,24.3,False
+bilstm,reg_hybrid_72h,72,True,0.3,adamw,0.0005,default,177728,6,2,0.35176,0.6803,0.9462,0.076,0.8717,0.8843,3.42,32.0,False
+cnn_lstm,reg_hybrid_72h,72,True,0.3,adamw,0.0005,default,66304,7,3,0.33096,0.6817,0.946,0.0741,0.8745,0.9103,3.54,28.5,False
+bilstm,reg_hybrid_72h_small,72,True,0.3,adamw,0.0005,32,65856,7,3,0.34472,0.6811,0.9461,0.0749,0.8686,0.898,3.86,31.0,True
+cnn_lstm,reg_hybrid_72h_small,72,True,0.3,adamw,0.0005,32,43520,8,4,0.32867,0.6787,0.9465,0.0782,0.8768,0.9126,4.1,29.2,True

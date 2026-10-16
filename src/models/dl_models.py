@@ -32,6 +32,29 @@ N_HORIZONS = len(HORIZONS)
 N_CLASSES = len(CFG["target"]["class_names"])
 
 
+class FeatureBranch(nn.Module):
+    """
+    STEP 5 (b) - the hybrid input.
+
+    The 211 engineered features at time t, squeezed through one dense layer
+    and concatenated with the sequence encoder's output. The idea is to give
+    the network the lags and rolling statistics the tree models get, instead
+    of making it rediscover them from the raw hourly series.
+    """
+
+    def __init__(self, n_features, hidden, dropout):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_features, hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.out_features = hidden
+
+    def forward(self, f):
+        return self.net(f)
+
+
 class Heads(nn.Module):
     """The shared dense layer and the two output heads, used by both models."""
 
@@ -61,9 +84,10 @@ class BiLSTM(nn.Module):
 
     name = "bilstm"
 
-    def __init__(self, n_channels, n_stations, cfg=None):
+    def __init__(self, n_channels, n_stations, cfg=None, n_features=0):
         super().__init__()
-        c = cfg or CFG["models"]["bilstm"]
+        c = dict(CFG["models"]["bilstm"])
+        c.update(cfg or {})
         self.embedding = nn.Embedding(n_stations, DL["station_embedding_dim"])
         self.lstm = nn.LSTM(
             input_size=n_channels, hidden_size=c["hidden_size"],
@@ -71,20 +95,26 @@ class BiLSTM(nn.Module):
             dropout=c["dropout"] if c["num_layers"] > 1 else 0.0,
             batch_first=True)
         directions = 2 if c["bidirectional"] else 1
-        self.heads = Heads(c["hidden_size"] * directions
-                           + DL["station_embedding_dim"],
-                           c["dense_size"], c["dropout"])
+        width = c["hidden_size"] * directions + DL["station_embedding_dim"]
+        self.features = None
+        if n_features:
+            self.features = FeatureBranch(n_features, c.get("feature_hidden", 64),
+                                          c["dropout"])
+            width += self.features.out_features
+        self.heads = Heads(width, c["dense_size"], c["dropout"])
         self.directions = directions
 
-    def forward(self, x, station):
+    def forward(self, x, station, features=None):
         # h_n is (num_layers * directions, batch, hidden)
         _, (h_n, _) = self.lstm(x)
         if self.directions == 2:
             last = torch.cat([h_n[-2], h_n[-1]], dim=1)   # forward + backward
         else:
             last = h_n[-1]
-        z = torch.cat([last, self.embedding(station)], dim=1)
-        return self.heads(z)
+        parts = [last, self.embedding(station)]
+        if self.features is not None:
+            parts.append(self.features(features))
+        return self.heads(torch.cat(parts, dim=1))
 
 
 class CNNLSTM(nn.Module):
@@ -95,9 +125,10 @@ class CNNLSTM(nn.Module):
 
     name = "cnn_lstm"
 
-    def __init__(self, n_channels, n_stations, cfg=None):
+    def __init__(self, n_channels, n_stations, cfg=None, n_features=0):
         super().__init__()
-        c = cfg or CFG["models"]["cnn_lstm"]
+        c = dict(CFG["models"]["cnn_lstm"])
+        c.update(cfg or {})
         ch1, ch2 = c["conv_channels"]
         k = c["kernel_size"]
         self.embedding = nn.Embedding(n_stations, DL["station_embedding_dim"])
@@ -112,14 +143,21 @@ class CNNLSTM(nn.Module):
         )
         self.lstm = nn.LSTM(input_size=ch2, hidden_size=c["hidden_size"],
                             num_layers=c["num_layers"], batch_first=True)
-        self.heads = Heads(c["hidden_size"] + DL["station_embedding_dim"],
-                           c["dense_size"], c["dropout"])
+        width = c["hidden_size"] + DL["station_embedding_dim"]
+        self.features = None
+        if n_features:
+            self.features = FeatureBranch(n_features, c.get("feature_hidden", 64),
+                                          c["dropout"])
+            width += self.features.out_features
+        self.heads = Heads(width, c["dense_size"], c["dropout"])
 
-    def forward(self, x, station):
+    def forward(self, x, station, features=None):
         z = self.conv(x.transpose(1, 2))         # (B, channels, time/2)
         _, (h_n, _) = self.lstm(z.transpose(1, 2))
-        z = torch.cat([h_n[-1], self.embedding(station)], dim=1)
-        return self.heads(z)
+        parts = [h_n[-1], self.embedding(station)]
+        if self.features is not None:
+            parts.append(self.features(features))
+        return self.heads(torch.cat(parts, dim=1))
 
 
 MODELS = {"bilstm": BiLSTM, "cnn_lstm": CNNLSTM}

@@ -3,8 +3,8 @@ STEP 4.1 - Turn the hourly table into sequences for the neural networks.
 
 A tree model gets 211 engineered features. A recurrent network is supposed
 to find the lags and rolling statistics itself, so it gets the raw hourly
-history instead: for a forecast made at time t, the last 48 hours
-(t-47 .. t) of
+history instead: for a forecast made at time t, the last N hours
+(t-(N-1) .. t, N = deep_learning.sequence_length, 48 by default) of
 
     6 water variables + their 6 "was missing" flags
     DO saturation (DO / solubility at the current water temperature)
@@ -110,13 +110,22 @@ class SequenceData:
     Build it once with `prepare()`, then ask for batches with `batch()`.
     """
 
-    def __init__(self, arrays, station_ids, index, meta, scaler, medians):
+    def __init__(self, arrays, station_ids, index, meta, scaler, medians,
+                 seq_len=None, features=None, feature_scaler=None,
+                 feature_medians=None, feature_names=None):
         self.arrays = arrays              # station -> (n_hours, n_channels)
         self.station_ids = station_ids    # station -> integer code
         self.index = index                # (n_rows, 2): station slot, row t
         self.meta = meta                  # DataFrame: station, time, targets
         self.scaler = scaler
         self.medians = medians
+        self.seq_len = SEQ_LEN if seq_len is None else int(seq_len)
+        # The step-2 engineered features at time t, already scaled, or None.
+        # One row per row of `meta`, in the same order.
+        self.features = features
+        self.feature_scaler = feature_scaler
+        self.feature_medians = feature_medians
+        self.feature_names = feature_names
         self._slots = sorted(arrays)
         self._slot_of = {s: i for i, s in enumerate(self._slots)}
         self._stack = [arrays[s] for s in self._slots]
@@ -127,21 +136,23 @@ class SequenceData:
 
     def batch(self, row_ids):
         """
-        Windows for these rows, as (batch, SEQ_LEN, n_channels) plus the
-        station codes. Built with one vectorised gather per station, not a
-        Python loop over samples.
+        Windows for these rows, as (batch, seq_len, n_channels), the station
+        codes, and the engineered features at time t (or None). Built with
+        one vectorised gather per station, not a Python loop over samples.
         """
         row_ids = np.asarray(row_ids)
         slots = self.index[row_ids, 0]
         ends = self.index[row_ids, 1]
-        x = np.empty((len(row_ids), SEQ_LEN, N_CHANNELS), dtype="float32")
+        L = self.seq_len
+        x = np.empty((len(row_ids), L, N_CHANNELS), dtype="float32")
         for slot in np.unique(slots):
             here = np.flatnonzero(slots == slot)
-            # offsets t-47 .. t for every row of this station at once
-            starts = ends[here] - SEQ_LEN + 1
-            take = starts[:, None] + np.arange(SEQ_LEN)[None, :]
+            # offsets t-(L-1) .. t for every row of this station at once
+            starts = ends[here] - L + 1
+            take = starts[:, None] + np.arange(L)[None, :]
             x[here] = self._stack[slot][take]
-        return x, self._codes[slots]
+        feats = None if self.features is None else self.features[row_ids]
+        return x, self._codes[slots], feats
 
     def targets(self, row_ids, task, h):
         col = f"{'y_reg' if task == 'regression' else 'y_cls'}_{h}"
@@ -152,7 +163,17 @@ class SequenceData:
         return self.meta["do_now"].to_numpy()[row_ids]
 
 
-def prepare(split, scaler=None, medians=None, stations=None):
+def engineered_feature_columns():
+    """The 211 step-2 features, in the same fixed order the tree models use."""
+    import json
+    with open(project_path(P["feature_groups"]), encoding="utf-8") as f:
+        groups = json.load(f)
+    return [c for g in ["water", "weather", "air", "time", "station"]
+            for c in groups[g]]
+
+
+def prepare(split, scaler=None, medians=None, stations=None, seq_len=None,
+            with_features=False, feature_scaler=None, feature_medians=None):
     """
     Build the sequence data for one split.
 
@@ -160,12 +181,23 @@ def prepare(split, scaler=None, medians=None, stations=None):
     fitted here on the training rows and returned. For validation, pass the
     ones that came back from the training call - nothing is ever fitted on
     2024.
+
+    `with_features=True` also loads the 211 engineered features at time t
+    (step 5's hybrid input). They come straight out of
+    data/processed/<split>.parquet, which step 2 built using only data at or
+    before t, so they carry no future information. Their NaNs are filled
+    with the TRAIN median and they are scaled by a StandardScaler fitted on
+    TRAIN - a second scaler, separate from the one for the sequence.
     """
+    seq_len = SEQ_LEN if seq_len is None else int(seq_len)
+    feature_cols = engineered_feature_columns() if with_features else []
     panel = pd.read_parquet(project_path(P["hourly"]))
     rows = pd.read_parquet(project_path(P[split]),
                            columns=["station", "time", "station_id", DO]
                                    + [f"y_{k}_{h}" for h in HORIZONS
-                                      for k in ["reg", "cls"]])
+                                      for k in ["reg", "cls"]]
+                                   + [c for c in feature_cols
+                                      if c not in ("station_id", DO)])
     if stations is not None:                     # --quick mode
         rows = rows[rows["station"].isin(stations)]
         panel = panel[panel["station"].isin(stations)]
@@ -195,21 +227,40 @@ def prepare(split, scaler=None, medians=None, stations=None):
         arrays[s] = scaler.transform(arrays[s].to_numpy()).astype("float32")
 
     # the row index: only rows that exist in the processed split AND have a
-    # full 48-hour history behind them
+    # full window of history behind them
     slots = sorted(arrays)
     slot_of = {s: i for i, s in enumerate(slots)}
     keep, idx = [], []
     for i, r in enumerate(rows.itertuples()):
         pos = positions[r.station].get(r.time)
-        if pos is None or pos < SEQ_LEN - 1:
+        if pos is None or pos < seq_len - 1:
             continue
         keep.append(i)
         idx.append((slot_of[r.station], pos))
 
     meta = rows.iloc[keep].reset_index(drop=True)
+
+    # the hybrid input: the engineered features at time t
+    features = None
+    if with_features:
+        f = meta[feature_cols].astype("float32")
+        if feature_medians is None:          # TRAIN only
+            feature_medians = f.median(numeric_only=True)
+        f = f.fillna(feature_medians)
+        # a column that is NaN for every training row has no median; 0 after
+        # scaling means "no information", which is what it is
+        f = f.fillna(0.0)
+        if feature_scaler is None:           # TRAIN only
+            from sklearn.preprocessing import StandardScaler
+            feature_scaler = StandardScaler().fit(f.to_numpy())
+        features = feature_scaler.transform(f.to_numpy()).astype("float32")
+
     meta = meta.rename(columns={DO: "do_now"})
     return SequenceData(arrays, station_ids, np.array(idx, dtype="int64"),
-                        meta, scaler, medians)
+                        meta, scaler, medians, seq_len=seq_len,
+                        features=features, feature_scaler=feature_scaler,
+                        feature_medians=feature_medians,
+                        feature_names=feature_cols or None)
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +272,15 @@ def scaler_path():
     return os.path.join(folder, "scaler.joblib")
 
 
-def save_scaler(scaler, medians):
+def save_scaler(scaler, medians, seq_len=None, feature_scaler=None,
+                feature_medians=None, feature_names=None):
+    """Everything needed to rebuild the inputs for a saved model."""
     joblib.dump({"scaler": scaler, "medians": medians,
-                 "channels": CHANNELS, "seq_len": SEQ_LEN}, scaler_path())
+                 "channels": CHANNELS,
+                 "seq_len": SEQ_LEN if seq_len is None else seq_len,
+                 "feature_scaler": feature_scaler,
+                 "feature_medians": feature_medians,
+                 "feature_names": feature_names}, scaler_path())
     return scaler_path()
 
 
