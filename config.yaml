@@ -435,3 +435,46 @@ dl_cls_fix:
   seeds: [42, 43, 44]
   archive_dir: "results/val/archive"
   results_csv: "results/val/dl_cls_fix.csv"
+
+# ---------------------------------------------------------------------------
+# STEP 6 - ATAE, the adaptive threshold-aware ensemble.
+#
+# Members are the five models that met the pre-registered rule in steps 3-5
+# (a pass at 3 or more of the 4 horizons). `linear` and `persistence` stay
+# as baselines to beat, not as members.
+#
+# Everything is tuned on val-A and reported on val-B (see validation_split:).
+# Nothing is retrained in step 6; the ensemble only reads the predictions
+# the members already wrote.
+# ---------------------------------------------------------------------------
+ensemble:
+  members: ["random_forest", "xgboost", "lightgbm", "bilstm", "cnn_lstm"]
+  baselines: ["persistence", "linear"]
+
+  # a station needs at least this many KNOWN errors in the window before its
+  # own history is trusted; below it, the all-station error is used
+  min_known_errors: 24
+
+  # the grid searched on val-A
+  grid:
+    alpha: [0, 2, 5, 10]          # how much extra weight near the threshold
+    sigma: [0.5, 1.0]             # how wide "near the threshold" is, mg/L
+    window_hours: [72, 168, 336]  # how far back "recently" goes
+    temperature: [0.25, 0.5, 1.0] # how hard to back the current best model
+
+  # The weighting used to SCORE candidates must not change with the alpha
+  # being tried, or each candidate would be marked by its own exam.
+  score_alpha: 5.0
+  score_sigma: 1.0
+
+  # the operational band for danger_zone_rmse, in mg/L
+  danger_zone: [3.0, 7.0]
+
+  # block bootstrap for the confidence intervals
+  bootstrap:
+    n_resamples: 1000
+    block: "station_week"
+
+  grid_results: "results/val/atae_grid_{task}.csv"
+  chosen_file: "results/val/atae_chosen.json"
+  weights_file: "results/val/atae_weights_{task}_h{h}.parquet"

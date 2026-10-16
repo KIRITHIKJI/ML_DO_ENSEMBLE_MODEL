@@ -183,3 +183,113 @@ def to_class(do_values):
     out[(v >= low) & (v <= good)] = 1
     out[v > good] = 2
     return out
+
+
+# ---------------------------------------------------------------------------
+# STEP 6 - early-warning metrics
+#
+# Overall accuracy hides the thing this project exists for. Most hours the
+# river simply stays where it is, so a model that never predicts a change
+# still scores well. These metrics look only at the hours that matter: the
+# ones where the class CHANGES, and in particular where water that is not
+# currently Low becomes Low.
+# ---------------------------------------------------------------------------
+def early_warning_metrics(class_now, y_true, y_pred):
+    """
+    class_now  the class at time t (0 Low, 1 Medium, 2 Good)
+    y_true     the true class at time t + h
+    y_pred     the predicted class at time t + h
+
+    Returns:
+      n_transitions        rows where the class changes between t and t+h
+      transition_accuracy  accuracy on those rows only
+      n_onsets             rows where it is NOT Low now and IS Low at t+h
+      onset_recall         share of those the model predicted Low
+      onset_precision      of the rows that are not Low now and are
+                           predicted Low, the share that really are Low
+      false_alarm_rate     of the rows that are not Low now and stay not
+                           Low, the share wrongly predicted Low
+
+    A persistence forecast scores 0 on onset recall and 0 on transition
+    accuracy by definition: it predicts "the same as now", so it never
+    predicts a change and is wrong on every row where one happens.
+    """
+    low = 0
+    ok = valid_mask(y_true, y_pred, class_now)
+    now = as_float(class_now)[ok].astype(int)
+    true = as_float(y_true)[ok].astype(int)
+    pred = as_float(y_pred)[ok].astype(int)
+
+    changed = true != now
+    not_low_now = now != low
+    onset = not_low_now & (true == low)          # the water turns dangerous
+    stays_safe = not_low_now & (true != low)
+    predicted_low = not_low_now & (pred == low)
+
+    def share(numerator, denominator):
+        n = int(denominator.sum())
+        return (float(numerator.sum()) / n) if n else float("nan")
+
+    return {
+        "n_transitions": int(changed.sum()),
+        "transition_accuracy": share(changed & (pred == true), changed),
+        "n_onsets": int(onset.sum()),
+        "onset_recall": share(onset & (pred == low), onset),
+        "onset_precision": share(predicted_low & (true == low), predicted_low),
+        "false_alarm_rate": share(stays_safe & (pred == low), stays_safe),
+    }
+
+
+def threshold_weight(y_value, alpha, sigma, centre=None):
+    """
+    How much an error at this DO value matters, for the step-6 ensemble:
+
+        w(y) = 1 + alpha * exp( -(y - threshold)^2 / (2 * sigma^2) )
+
+    It is largest right at the Low threshold (5 mg/L), where being wrong
+    turns a warning into a miss, and falls to 1 far away from it, where
+    being wrong costs nothing but a number in a table. alpha = 0 switches
+    the whole idea off.
+    """
+    centre = CFG["target"]["thresholds"]["low"] if centre is None else centre
+    y = as_float(y_value)
+    return 1.0 + alpha * np.exp(-((y - centre) ** 2) / (2.0 * sigma ** 2))
+
+
+def weighted_rmse(y_true, y_pred, alpha, sigma):
+    """RMSE with each row weighted by threshold_weight: the tuning score."""
+    ok = valid_mask(y_true, y_pred)
+    y, p = as_float(y_true)[ok], as_float(y_pred)[ok]
+    if not len(y):
+        return np.nan
+    w = threshold_weight(y, alpha, sigma)
+    return float(np.sqrt(np.sum(w * (y - p) ** 2) / np.sum(w)))
+
+
+def danger_zone_rmse(y_true, y_pred, low=3.0, high=7.0):
+    """
+    RMSE over the rows that actually matter operationally: true DO between
+    3 and 7 mg/L, the band where a river crosses into trouble.
+    """
+    ok = valid_mask(y_true, y_pred)
+    y, p = as_float(y_true)[ok], as_float(y_pred)[ok]
+    band = (y >= low) & (y <= high)
+    if not band.any():
+        return np.nan
+    return float(np.sqrt(np.mean((y[band] - p[band]) ** 2)))
+
+
+def brier_score(y_true_class, proba):
+    """
+    Brier score per row: the squared distance between the predicted
+    probabilities and a 1-of-3 indicator of the truth. 0 is perfect, 2 is
+    as wrong as possible. Used as the ensemble's classification error.
+    """
+    y = as_float(y_true_class)
+    p = as_float(proba)
+    out = np.full(len(y), np.nan)
+    ok = ~np.isnan(y) & ~np.isnan(p).any(axis=1)
+    target = np.zeros_like(p[ok])
+    target[np.arange(ok.sum()), y[ok].astype(int)] = 1.0
+    out[ok] = ((p[ok] - target) ** 2).sum(axis=1)
+    return out
