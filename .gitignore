@@ -40,3 +40,6 @@ desktop.ini
 results/val/predictions/
 # Archived per-row predictions (kept on disk for restore, not in git).
 results/val/archive/predictions_*/
+# Out-of-fold per-row predictions (~350 MB). Re-created by
+# src/models/run_step7.py; the csv summaries beside them ARE kept.
+results/val/oof/*.parquet

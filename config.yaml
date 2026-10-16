@@ -478,3 +478,61 @@ ensemble:
   grid_results: "results/val/atae_grid_{task}.csv"
   chosen_file: "results/val/atae_chosen.json"
   weights_file: "results/val/atae_weights_{task}_h{h}.parquet"
+
+# ---------------------------------------------------------------------------
+# STEP 7 - blocked cross-fitting, the context-aware ensemble, warning rule.
+# ---------------------------------------------------------------------------
+crossfit:
+  n_folds: 6
+  months_per_fold: 2          # Jan-Feb, Mar-Apr, ... Nov-Dec
+  # Dropped from the TRAINING side on both sides of the held-out fold, so a
+  # 48 h target and the 336 h error window can never reach into it.
+  purge_days: 14
+  inner_holdout: 0.15         # time-ordered tail of the training folds,
+                              # used only for early stopping
+
+context_ensemble:
+  # The meta-model is deliberately small: it has five strong members to
+  # arbitrate between, not a new problem to solve from scratch, and the
+  # easiest way to ruin an ensemble is to let its referee overfit.
+  lightgbm:
+    num_leaves: 15
+    min_child_samples: 200
+    learning_rate: 0.03
+    feature_fraction: 0.8
+    lambda_l2: 1.0
+    n_estimators: 500
+    early_stopping_rounds: 30
+  # River context at time t, taken from data/processed (values at t only).
+  context_features: ["do_mgl", "do_minus_threshold", "do_mgl_chg6",
+                     "do_mgl_chg24", "do_swing24", "do_saturation",
+                     "water_temp_c", "do_hours_since_low",
+                     "hour_sin", "hour_cos", "doy_sin", "doy_cos"]
+  # The error window for the "how has each member been doing lately"
+  # features; matches the window ATAE chose in step 6.
+  error_window_hours: 336
+  # No station_id on purpose: the meta-model should learn situations, not
+  # stations, so it can transfer to a period (and a station) it never saw.
+  use_station_id: false
+  model_dir: "models/ensemble"
+
+warning_rule:
+  # Argmax answers "which class is most likely". A warning system asks
+  # "is the chance of Low high enough to act on", which is a different and
+  # lower bar. tau is chosen on the training folds only.
+  tau_grid_start: 0.05
+  tau_grid_stop: 0.95
+  tau_grid_step: 0.01
+  max_false_alarm_rate: 0.02   # the budget: at most 2% false alarms
+  fallback: "argmax"           # if no tau meets the budget
+
+step7:
+  methods: ["persistence", "linear", "random_forest", "xgboost", "lightgbm",
+            "bilstm", "cnn_lstm", "simple_average", "stacking", "atae", "cae"]
+  learned_methods: ["stacking", "atae", "cae"]
+  bootstrap_against: ["stacking", "simple_average"]
+  oof_predictions: "results/val/oof"
+  results_dir: "results/val"
+
+# Written by src/evaluation/step7_report.py from its pre-set decision rule.
+final_system: "stacking"
