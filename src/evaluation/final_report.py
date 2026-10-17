@@ -643,7 +643,8 @@ def scope_section():
     out.append("- **Adaptive weighting (ATAE) is worth revisiting.** It was "
                "rejected on validation by a rule written in advance, and it "
                "then came out level with or just ahead of stacking on 2025 "
-               "(sections 1 and 2). That is a promising hint, not evidence: "
+               "(sections 1 and 2a). That is a promising hint, not "
+               "evidence: "
                "the comparison happened after the test year was opened, so "
                "it cannot be used to change the deployed system. Only a "
                "new, unseen year can settle it.")
@@ -702,9 +703,12 @@ def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
                f"trouble.\n")
 
     # ---- 3. classification ----
-    for rule, title in [("warn", "with the frozen warning rule"),
-                        ("argmax", "with argmax")]:
-        out.append(f"\n## 2. Classification, 24 hours ahead, 2025 - {title}\n")
+    # 2a and 2b, not two sections both numbered 2: this is one table scored
+    # two ways, and lettering it leaves sections 3-9 with their numbers.
+    for number, rule, title in [("2a", "warn", "with the frozen warning rule"),
+                                ("2b", "argmax", "with argmax")]:
+        out.append(f"\n## {number}. Classification, 24 hours ahead, 2025 - "
+                   f"{title}\n")
         head = ["method", "accuracy", "balanced acc", "macro F1", "ROC-AUC",
                 "Low recall", "onset recall", "false alarm", "transition acc"]
         rows = []

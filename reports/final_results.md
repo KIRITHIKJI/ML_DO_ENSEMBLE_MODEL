@@ -21,7 +21,7 @@
 Danger-zone RMSE covers the rows whose true DO lies between 3.0 and 7.0 mg/L - the band where a river actually crosses into trouble.
 
 
-## 2. Classification, 24 hours ahead, 2025 - with the frozen warning rule
+## 2a. Classification, 24 hours ahead, 2025 - with the frozen warning rule
 
 | method | accuracy | balanced acc | macro F1 | ROC-AUC | Low recall | onset recall | false alarm | transition acc |
 |---|---|---|---|---|---|---|---|---|
@@ -36,7 +36,7 @@ Danger-zone RMSE covers the rows whose true DO lies between 3.0 and 7.0 mg/L - t
 | atae | 0.904 | 0.896 | 0.8859 | 0.982 | 0.942 | 0.510 | 0.0157 | 0.312 |
 | **stacking** | 0.904 | 0.896 | 0.8860 | 0.982 | 0.941 | 0.496 | 0.0150 | 0.291 |
 
-## 2. Classification, 24 hours ahead, 2025 - with argmax
+## 2b. Classification, 24 hours ahead, 2025 - with argmax
 
 | method | accuracy | balanced acc | macro F1 | ROC-AUC | Low recall | onset recall | false alarm | transition acc |
 |---|---|---|---|---|---|---|---|---|
@@ -291,4 +291,4 @@ Across seeds 42-44 the single-model spread at 24 h is bilstm RMSE +-0.0023, macr
 - **Evaluated at monitored stations.** That is the intended use: a warning for a river where a sensor already sits, turning a reading into a forecast. Every station in the 2025 test also appears in training, so nothing here measures transfer to a river the system has never seen - testing on unseen stations is future work.
 - **US rivers, USGS gauges.** Water data comes from USGS instantaneous values, with ERA5 weather and CAMS air quality. Applying the same pipeline to Indian rivers - the CPCB real-time stations, for example - is future work, and would need its own freeze and its own untouched test year.
 - **One test year.** 2025 was scored once, which is what makes it honest, but one year is one draw. A further untouched year would narrow every interval in this report.
-- **Adaptive weighting (ATAE) is worth revisiting.** It was rejected on validation by a rule written in advance, and it then came out level with or just ahead of stacking on 2025 (sections 1 and 2). That is a promising hint, not evidence: the comparison happened after the test year was opened, so it cannot be used to change the deployed system. Only a new, unseen year can settle it.
+- **Adaptive weighting (ATAE) is worth revisiting.** It was rejected on validation by a rule written in advance, and it then came out level with or just ahead of stacking on 2025 (sections 1 and 2a). That is a promising hint, not evidence: the comparison happened after the test year was opened, so it cannot be used to change the deployed system. Only a new, unseen year can settle it.

@@ -252,6 +252,34 @@ def test_the_report_has_the_two_new_sections(report):
         "the old Limitations section should have been replaced"
 
 
+def test_no_two_report_headings_share_a_number(report):
+    """
+    Two sections both called "## 2." make every cross-reference ambiguous.
+    The numbered headings must be distinct; 2a and 2b count as different.
+    """
+    numbers = re.findall(r"^## ([0-9]+[a-z]?)\.", report, flags=re.M)
+    duplicates = sorted({n for n in numbers if numbers.count(n) > 1})
+    assert not duplicates, \
+        f"these section numbers appear more than once: {duplicates}"
+    # and a bare number must not coexist with its own lettered variants
+    bare = {n for n in numbers if n.isdigit()}
+    lettered = {n[:-1] for n in numbers if not n.isdigit()}
+    assert not (bare & lettered), \
+        f"both '{bare & lettered}' and its lettered variants are used"
+
+
+def test_report_cross_references_point_at_headings_that_exist(report):
+    """Every "section N" in the prose must name a heading in the report."""
+    headings = set(re.findall(r"^## ([0-9]+[a-z]?)\.", report, flags=re.M))
+    referenced = set()
+    for m in re.finditer(r"sections? ([0-9]+[a-z]?)(?: and ([0-9]+[a-z]?))?",
+                         report):
+        referenced |= {g for g in m.groups() if g}
+    assert referenced, "no cross-references found at all - did the prose change?"
+    missing = sorted(referenced - headings)
+    assert not missing, f"these cross-references name no section: {missing}"
+
+
 def test_the_report_labels_the_new_work_as_analysis_only(report):
     sec = report.split("## Design choices and how they were checked")[1]
     sec = sec.split("## Scope and future work")[0]
@@ -274,3 +302,15 @@ def test_the_app_reads_the_report_rather_than_hard_coding_it():
     assert "report_section(" in src
     assert "## Design choices and how they were checked" in src
     assert "## Scope and future work" in src
+
+
+def test_every_heading_the_app_looks_up_exists_in_the_report(report):
+    """
+    The app slices the report by heading text. Renumbering a section is
+    therefore a breaking change for it unless every literal still matches.
+    """
+    src = open(project_path("app", "app.py"), encoding="utf-8").read()
+    wanted = set(re.findall(r'"(## [^"]+)"', src))
+    assert wanted, "the app no longer looks up any heading"
+    missing = sorted(h for h in wanted if h not in report)
+    assert not missing, f"the app looks for headings that are gone: {missing}"
