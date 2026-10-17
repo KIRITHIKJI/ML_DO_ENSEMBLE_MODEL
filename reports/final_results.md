@@ -187,6 +187,23 @@ The headline numbers use members retrained on 2023+2024 (stage 2). The same chai
 | 24 h | 0.687 | 0.672 | 0.495 | 0.496 |
 | 48 h | 0.874 | 0.853 | 0.487 | 0.485 |
 
+## Stage-3 models (what the app uses)
+
+**Every number in this report comes from the stage-2 models, trained on 2023+2024.** Those are the ones that were scored on 2025.
+
+A second set, in `models/final/`, was retrained afterwards on **2023 + 2024 + 2025** so the app can forecast using every hour ever recorded. Those models are **untested and untestable**: they have seen the test year, so there is no data left to score them on, and any metric computed for them would be meaningless. They are never used for a reported result.
+
+They were checked only for sanity: every file loads and predicts without error, and their 2025 predictions still agree closely with the stage-2 models'. Across 40 model-task-horizon comparisons the correlation runs from **0.9790 to 0.9998** (median 0.9923), with a median absolute difference of 0.0400 and a worst of 0.2226. Nothing fell below the 0.95 correlation threshold, so nothing is flagged. A small difference is expected and healthy: stage 3 saw 2025 during training and stage 2 did not.
+
+| model | task | horizon | correlation | mean abs. difference |
+|---|---|---|---|---|
+| xgboost | classification | 12 h | 0.9790 | 0.0202 |
+| xgboost | classification | 6 h | 0.9800 | 0.0199 |
+| xgboost | classification | 48 h | 0.9806 | 0.0241 |
+
+*(the three lowest correlations, for reference)*
+
+
 ## Plots
 
 - `results\test\plots\test_station_02198920_2025-05.png`

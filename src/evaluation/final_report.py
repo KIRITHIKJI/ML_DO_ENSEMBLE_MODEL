@@ -568,6 +568,47 @@ def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
                          "onset recall (2023 only)",
                          "onset recall (2023+2024)"], rows))
 
+    # ---- stage 3: the models the app uses, which cannot be tested ----
+    out.append("\n## Stage-3 models (what the app uses)\n")
+    out.append("**Every number in this report comes from the stage-2 "
+               "models, trained on 2023+2024.** Those are the ones that "
+               "were scored on 2025.\n")
+    out.append("A second set, in `models/final/`, was retrained afterwards "
+               "on **2023 + 2024 + 2025** so the app can forecast using "
+               "every hour ever recorded. Those models are **untested and "
+               "untestable**: they have seen the test year, so there is no "
+               "data left to score them on, and any metric computed for "
+               "them would be meaningless. They are never used for a "
+               "reported result.\n")
+    san = os.path.join(RESULTS, "stage3_sanity.csv")
+    if os.path.exists(san):
+        d = pd.read_csv(san)
+        out.append(
+            f"They were checked only for sanity: every file loads and "
+            f"predicts without error, and their 2025 predictions still "
+            f"agree closely with the stage-2 models'. Across {len(d)} "
+            f"model-task-horizon comparisons the correlation runs from "
+            f"**{d['correlation'].min():.4f} to "
+            f"{d['correlation'].max():.4f}** (median "
+            f"{d['correlation'].median():.4f}), with a median absolute "
+            f"difference of {d['mean_abs_diff'].median():.4f} and a worst "
+            f"of {d['mean_abs_diff'].max():.4f}. "
+            + (f"**{int(d['flag'].sum())} comparisons fell below the 0.95 "
+               f"correlation threshold and are flagged in "
+               f"`results/test/stage3_sanity.csv`.**"
+               if d["flag"].any() else
+               "Nothing fell below the 0.95 correlation threshold, so "
+               "nothing is flagged.")
+            + " A small difference is expected and healthy: stage 3 saw "
+              "2025 during training and stage 2 did not.\n")
+        worst = d.sort_values("correlation").head(3)
+        out.append(md_table(["model", "task", "horizon", "correlation",
+                             "mean abs. difference"],
+                            [[r.model, r.task, f"{r.horizon} h",
+                              f"{r.correlation:.4f}", f"{r.mean_abs_diff:.4f}"]
+                             for r in worst.itertuples()]))
+        out.append("\n*(the three lowest correlations, for reference)*\n")
+
     out.append("\n## Plots\n")
     for p in plots:
         out.append(f"- `{os.path.relpath(p, project_path('.'))}`")
