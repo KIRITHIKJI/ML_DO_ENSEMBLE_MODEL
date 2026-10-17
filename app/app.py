@@ -31,6 +31,7 @@ LOW = CFG["target"]["thresholds"]["low"]
 GOOD = CFG["target"]["thresholds"]["good"]
 MEMBERS = CFG["ensemble"]["members"]
 RESULTS = project_path(FT["results_dir"])
+PLOTS = project_path(FT["plots_dir"])
 CLASS_COLOUR = {"Low": "#d62728", "Medium": "#ff7f0e", "Good": "#2ca02c"}
 
 st.set_page_config(page_title="DO Early Warning", page_icon="💧",
@@ -73,6 +74,27 @@ def load_pred(method, h):
 @st.cache_resource(show_spinner=False)
 def get_forecaster(stage):
     return PS.Forecaster(stage)
+
+
+@st.cache_data(show_spinner=False)
+def report_section(heading, stop_at=None):
+    """
+    One section of reports/final_results.md, verbatim. The report is the
+    single source of truth for every number the app shows, so the Method
+    tab quotes it rather than keeping its own copy that could drift.
+    """
+    path = project_path("reports", "final_results.md")
+    if not os.path.exists(path):
+        return None
+    text = open(path, encoding="utf-8").read()
+    if heading not in text:
+        return None
+    body = text.split(heading, 1)[1]
+    if stop_at:
+        for marker in ([stop_at] if isinstance(stop_at, str) else stop_at):
+            if marker in body:
+                body = body.split(marker, 1)[0]
+    return body.strip()
 
 
 def metric_row(reg, cls, method, h, rule="warn"):
@@ -595,20 +617,32 @@ rule down before seeing the numbers is what makes "we rejected it" a
 result rather than a preference.
     """)
 
-    st.subheader("Limitations")
-    st.markdown("""
-- The members' hyperparameters were chosen on 2024, so 2025 is an honest
-  test of the **pipeline**, not of each model in isolation.
-- The stacking meta-model was fitted on 2024 predictions of 2023-only
-  models, then used on top of models retrained on 2023+2024.
-- One station stops reporting on 2025-11-19.
-- 30 US rivers only. Every station in the test also appears in training, so
-  nothing here says how the system behaves on a river it has never seen.
-- The deep models are the weakest members; they earn their place by being
-  different from the trees, not by being better.
-- Most of the gain in catching onsets comes from the **decision rule**, not
-  from the ensemble.
-    """)
+    st.subheader("Design choices and how they were checked")
+    st.caption("Read straight from `reports/final_results.md`, so every "
+               "number here is the one in the report. These are additional "
+               "analyses: they re-score predictions that already existed, "
+               "and none of them was used to choose or change the frozen "
+               "system.")
+    design = report_section("## Design choices and how they were checked",
+                            ["## Scope and future work"])
+    if design:
+        st.markdown(design)
+    else:
+        st.info("Run `python -m src.evaluation.step10_checks` and then "
+                "`python -m src.evaluation.final_report` to generate this "
+                "section.")
+
+    plot = os.path.join(PLOTS, "error_correlation_h24.png")
+    if os.path.exists(plot):
+        st.image(plot, caption="Correlation of 24 h forecast errors between "
+                               "the five members, 2025. Analysis only - not "
+                               "used to change the system.",
+                 use_container_width=False)
+
+    st.subheader("Scope and future work")
+    scope = report_section("## Scope and future work")
+    if scope:
+        st.markdown(scope)
 
     with st.expander("The exact frozen configuration"):
         p = project_path(FT["frozen_file"])

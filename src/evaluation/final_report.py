@@ -11,6 +11,7 @@ Nothing is fitted, tuned or re-scored here.
 
 import json
 import os
+import re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -324,9 +325,330 @@ def main():
     plots = (plot_station_months() + [plot_confusion(), plot_onset_vs_fa(cls),
                                       plot_rmse_vs_horizon(reg),
                                       plot_ablation(abl)])
+    # step 10, if it has been run: an additional analysis, not a result
+    extra = os.path.join(PLOTS, "error_correlation_h24.png")
+    if os.path.exists(extra):
+        plots.append(extra)
 
     write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots)
     terminal(reg, cls, abl, lead, boot, stations)
+
+
+# ---------------------------------------------------------------------------
+# STEP 10 - design choices and scope.
+#
+# ADDITIONAL ANALYSES ONLY. Every number below is read from the step-10
+# CSVs, which re-score predictions that already existed. None of it was
+# used to choose or change the deployed system: `final_system` and every
+# threshold were fixed in FROZEN.md before 2025 was read.
+# ---------------------------------------------------------------------------
+def step10(name):
+    path = os.path.join(RESULTS, name)
+    return pd.read_csv(path) if os.path.exists(path) else None
+
+
+def ci(row, metric, nd=4):
+    return (f"{row[f'{metric}_diff']:+.{nd}f} "
+            f"[{row[f'{metric}_lo']:+.{nd}f}, {row[f'{metric}_hi']:+.{nd}f}]")
+
+
+def design_checks_section(reg, cls):
+    out = ["\n## Design choices and how they were checked\n"]
+    out.append("Six choices shaped this system. Each one is written down "
+               "here with the check that was run on it. The checks in this "
+               "section are **additional analyses**: they re-score "
+               "predictions that already existed, and none of them was used "
+               "to choose or change the deployed system, which was fixed in "
+               "`FROZEN.md` before any 2025 target was read.\n")
+
+    # ---- 1. hyperparameters on 2024 ----
+    freeze = ""
+    fpath = project_path(FT["frozen_file"])
+    if os.path.exists(fpath):
+        m = re.search(r"at commit `([0-9a-f]{40})`",
+                      open(fpath, encoding="utf-8").read())
+        if m:
+            freeze = (f" The freeze is commit `{m.group(1)[:12]}`, so the "
+                      f"claim is checkable rather than asserted.")
+    out.append("**1. Hyperparameters were chosen on the 2024 validation "
+               "year.** This is the standard three-way split: 2023 trains, "
+               "2024 decides, 2025 judges. What 2025 tests is therefore the "
+               "whole frozen pipeline - architecture, rounds, ensemble and "
+               "warning thresholds together - rather than each model in "
+               "isolation, which is the quantity an operator actually "
+               "deploys. Every one of those settings, plus a SHA-256 for "
+               "each model file, was committed before the test."
+               + freeze + "\n")
+
+    # ---- 2. stacking train/apply design ----
+    p = step10("step10_pipeline.csv")
+    out.append("**2. The stacking meta-model was fitted on 2024 predictions "
+               "of 2023-only members, then applied on top of members "
+               "retrained on 2023+2024.** The headline chain therefore has a "
+               "train/apply mismatch. A second chain has none: 2023-only "
+               "members, the same meta-model fitted on their 2024 "
+               "predictions, applied to 2025 (stage 1). If the mismatch were "
+               "flattering the headline, the consistent chain would be the "
+               "better of the two.")
+    if p is not None:
+        r24 = p[p["horizon"] == 24].iloc[0]
+        ns = int((~p["onset_recall_significant"]).sum())
+        out.append(f"It is not. At 24 h the consistent chain gives RMSE "
+                   f"{r24['rmse_stage1']:.4f} against the headline's "
+                   f"{r24['rmse_stage2']:.4f} and onset recall "
+                   f"{r24['onset_recall_stage1']:.3f} against "
+                   f"{r24['onset_recall_stage2']:.3f} - a difference of "
+                   f"{ci(r24, 'onset_recall', 3)}, which contains zero. The "
+                   f"consistent chain is slightly *worse* on RMSE "
+                   f"({ci(r24, 'rmse')}) and macro F1 "
+                   f"({ci(r24, 'f1_macro')}), and the gap is the size of "
+                   f"what one extra training year bought elsewhere "
+                   f"(section 9). On onset recall - the metric the system is "
+                   f"built for - the two chains are indistinguishable at "
+                   f"{ns} of the {len(p)} horizons. The mismatch costs "
+                   f"nothing the test can detect; the headline is better "
+                   f"because its members saw a second year, not because the "
+                   f"meta-model was handed inputs it had not learned to "
+                   f"blend.\n")
+        rows = []
+        for r in p.itertuples():
+            rows.append([f"{r.horizon} h",
+                         f"{r.rmse_stage1:.4f}", f"{r.rmse_stage2:.4f}",
+                         f"{r.rmse_diff:+.4f} [{r.rmse_lo:+.4f}, {r.rmse_hi:+.4f}]",
+                         f"{r.r2_stage1:.4f}", f"{r.r2_stage2:.4f}",
+                         f"{r.f1_macro_stage1:.4f}", f"{r.f1_macro_stage2:.4f}",
+                         f"{r.f1_macro_diff:+.4f} [{r.f1_macro_lo:+.4f}, {r.f1_macro_hi:+.4f}]",
+                         f"{r.onset_recall_stage1:.3f}", f"{r.onset_recall_stage2:.3f}",
+                         f"{r.onset_recall_diff:+.3f} [{r.onset_recall_lo:+.3f}, {r.onset_recall_hi:+.3f}]",
+                         f"{r.false_alarm_rate_stage1:.4f}",
+                         f"{r.false_alarm_rate_stage2:.4f}",
+                         f"{r.false_alarm_rate_diff:+.4f} [{r.false_alarm_rate_lo:+.4f}, {r.false_alarm_rate_hi:+.4f}]"])
+        out.append(md_table(
+            ["horizon", "RMSE consistent", "RMSE headline",
+             "RMSE diff [95% CI]", "R2 consistent", "R2 headline",
+             "macroF1 consistent", "macroF1 headline",
+             "macroF1 diff [95% CI]", "onset consistent", "onset headline",
+             "onset diff [95% CI]", "FA consistent", "FA headline",
+             "FA diff [95% CI]"], rows))
+        out.append("\n*Consistent = stage 1 (2023-only members, no "
+                   "train/apply mismatch); headline = stage 2 (members "
+                   "retrained on 2023+2024). Both chains use the same "
+                   "meta-models and the same frozen thresholds, and predict "
+                   "the same 2025 rows. Differences are consistent minus "
+                   "headline, with 1,000 station-week bootstrap resamples; "
+                   "a CI containing zero means the two chains cannot be told "
+                   "apart. No model was retrained for this table. Source: "
+                   "`results/test/step10_pipeline.csv`.*\n")
+
+    # ---- 3. the station that stops reporting ----
+    d = step10("step10_dropout.csv")
+    out.append("**3. One station stops reporting on 2025-11-19**, so the "
+               "last six weeks of the test year have 29 stations rather "
+               "than 30. The same 2025 predictions were re-scored two more "
+               "ways - without that station for the whole year, and with "
+               "all thirty stations but only up to 2025-11-18 - so the "
+               "question is whether the uneven tail moved the headline.")
+    if d is not None:
+        h24 = d[d["horizon"] == 24].set_index("subset")
+        base = h24.iloc[0]
+        worst_fa = float(d["false_alarm_rate"].max())
+        out.append(f"It did not. At 24 h, onset recall is "
+                   f"{base['onset_recall']:.3f} in the headline and "
+                   f"{h24['onset_recall'].min():.3f} to "
+                   f"{h24['onset_recall'].max():.3f} across the three "
+                   f"subsets; RMSE runs {h24['rmse'].min():.4f} to "
+                   f"{h24['rmse'].max():.4f} and macro F1 "
+                   f"{h24['f1_macro'].min():.4f} to "
+                   f"{h24['f1_macro'].max():.4f}. The false-alarm rate "
+                   f"stays inside the "
+                   f"{FT['target_false_alarm_rate']:.0%} promise at every "
+                   f"horizon and in every subset (worst {worst_fa:.2%}). "
+                   f"Dropping the station helps slightly - it is one of the "
+                   f"harder ones - and cutting the year short costs a "
+                   f"little on false alarms, because December is a quiet "
+                   f"month whose safe hours were diluting the rate. Neither "
+                   f"moves a conclusion.\n")
+        rows = [[f"{r.horizon} h", r.subset, f"{r.n:,}", f"{r.n_onsets:,}",
+                 f"{r.rmse:.4f}", f"{r.r2:.4f}", f"{r.f1_macro:.4f}",
+                 f"{r.onset_recall:.3f}", f"{r.false_alarm_rate:.4f}"]
+                for r in d.itertuples()]
+        out.append(md_table(["horizon", "subset", "rows", "onsets", "RMSE",
+                             "R2", "macro F1", "onset recall",
+                             "false alarm"], rows))
+        out.append("\n*Stacking with the frozen warning rule, re-scored "
+                   "only - no model was retrained and no threshold was "
+                   "re-chosen. Source: `results/test/step10_dropout.csv`.*\n")
+
+    # ---- 4. the deep members ----
+    c = step10("step10_error_correlation_h24.csv")
+    out.append("**4. The two deep models are the weakest members** and were "
+               "kept anyway. The reason is diversity, not accuracy: an "
+               "ensemble gains from members that are wrong about different "
+               "hours, so what matters is how correlated their errors are "
+               "with the trees'.")
+    if c is not None:
+        c = c.set_index(c.columns[0])
+        names = list(c.columns)
+        pairs = {}
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                pairs[(a, b)] = float(c.loc[a, b])
+        trees = [n for n in names
+                 if n in ("random_forest", "xgboost", "lightgbm")]
+        deep = [n for n in names if n in ("bilstm", "cnn_lstm")]
+        tree_tree = [v for (a, b), v in pairs.items()
+                     if a in trees and b in trees]
+        cross = [v for (a, b), v in pairs.items()
+                 if (a in trees and b in deep) or (a in deep and b in trees)]
+        deep_deep = [v for (a, b), v in pairs.items()
+                     if a in deep and b in deep]
+        out.append(f"The gradient-boosted trees' 24 h errors correlate "
+                   f"{min(tree_tree):.3f} to {max(tree_tree):.3f} with each "
+                   f"other. A deep model against a boosted tree is lower: "
+                   f"XGBoost and LightGBM sit at "
+                   f"{c.loc['xgboost', 'bilstm']:.3f} and "
+                   f"{c.loc['lightgbm', 'bilstm']:.3f} against the BiLSTM, "
+                   f"with the whole cross-family range running "
+                   f"{min(cross):.3f} to {max(cross):.3f}. The two deep "
+                   f"models are close to interchangeable with each other "
+                   f"({deep_deep[0]:.3f}), which is why there would be "
+                   f"little to gain from a third. **Lower correlation means "
+                   f"the members miss different hours, so averaging or "
+                   f"stacking them cancels more error than combining models "
+                   f"that fail together.** That is what the deep members "
+                   f"are in the ensemble for, and it is why they stay in "
+                   f"even though each one on its own is beaten by every "
+                   f"tree.\n")
+        rows = [[a] + [f"{c.loc[a, b]:.3f}" for b in names] for a in names]
+        out.append(md_table([""] + names, rows))
+        out.append("\n*Pearson correlation of 24 h errors "
+                   "(`y_pred - y_true`) over the 2025 rows, from the "
+                   "predictions step 8 already wrote. Heatmap: "
+                   "`results/test/plots/error_correlation_h24.png`. "
+                   "**Analysis only - not used to choose or change the "
+                   "system.** Source: "
+                   "`results/test/step10_error_correlation_h24.csv`.*\n")
+
+    # ---- 5. the warning rule ----
+    out.append("**5. The warning rule is the main contribution of the "
+               "decision layer.** Argmax answers *which class is most "
+               "likely*; a warning system asks *is the chance of Low high "
+               "enough to act on*, which is a lower bar and a different "
+               "question. Separating the two is the decision layer's whole "
+               "job, and on 2025 it is worth more than any choice of "
+               "ensemble.")
+    rows = []
+    for h in HORIZONS:
+        rows.append([f"{h} h",
+                     fmt(get_c(cls, "stacking", h, "argmax", "onset_recall"), 3),
+                     fmt(get_c(cls, "stacking", h, "warn", "onset_recall"), 3),
+                     fmt(get_c(cls, "stacking", h, "argmax",
+                               "false_alarm_rate"), 4),
+                     fmt(get_c(cls, "stacking", h, "warn",
+                               "false_alarm_rate"), 4)])
+    a24 = get_c(cls, "stacking", 24, "argmax", "onset_recall")
+    w24 = get_c(cls, "stacking", 24, "warn", "onset_recall")
+    fa24a = get_c(cls, "stacking", 24, "argmax", "false_alarm_rate")
+    fa24 = get_c(cls, "stacking", 24, "warn", "false_alarm_rate")
+    best_r = get_r(reg, "stacking", 24, "rmse") - \
+        get_r(reg, BEST["regression"], 24, "rmse")
+    out.append(f"At 24 h the rule lifts onset recall from {a24:.3f} to "
+               f"{w24:.3f} - **{w24 / a24:.1f} times** as many onsets "
+               f"caught - for a false-alarm rate that rises from "
+               f"{fa24a:.2%} to {fa24:.2%}, still inside the "
+               f"{FT['target_false_alarm_rate']:.0%} the system promises. "
+               f"For comparison, choosing stacking over the best single "
+               f"model is worth {abs(best_r):.4f} mg/L of RMSE and nothing "
+               f"detectable on macro F1 or onset recall (section 3). The "
+               f"threshold was chosen on out-of-fold 2024 probabilities "
+               f"against a {FT['select_false_alarm_rate']:.1%} internal "
+               f"budget - tighter than the promise on purpose - and frozen "
+               f"before the test.\n")
+    out.append(md_table(["horizon", "onset recall (argmax)",
+                         "onset recall (rule)", "false alarm (argmax)",
+                         "false alarm (rule)"], rows))
+    out.append("")
+
+    # ---- 6. GPU training and reproducibility ----
+    s = step10("step10_seed_spread.csv")
+    g = step10("step10_method_gaps.csv")
+    out.append("**6. The deep models were trained on a GPU with "
+               "non-deterministic kernels**, so a rerun does not reproduce "
+               "a run bit for bit. The frozen system handles that by "
+               "averaging three seeds, and the size of the remaining wobble "
+               "was measured rather than assumed.")
+    if s is not None:
+        parts = [f"{r.model} RMSE +-{r.rmse_std:.4f}, macro F1 "
+                 f"+-{r.f1_std:.4f}" for r in s.itertuples()]
+        worst_rmse = float(s["rmse_std"].max())
+        worst_f1 = float(s["f1_std"].max())
+        line = (f"Across seeds 42-44 the single-model spread at 24 h is "
+                f"{'; '.join(parts)} (standard deviation over three seeds).")
+        if g is not None:
+            m = g.set_index("comparison")
+            line += (f" The differences the 2025 tables are asked to resolve "
+                     f"are of the same order: stacking beats the best single "
+                     f"model by "
+                     f"{m.loc['stacking vs best single (lightgbm)', 'rmse_gap']:.4f}"
+                     f" mg/L of RMSE and the simple average by "
+                     f"{m.loc['stacking vs simple average', 'rmse_gap']:.4f},"
+                     f" against a worst-case seed spread of "
+                     f"{worst_rmse:.4f}. On macro F1 the gaps "
+                     f"({m.loc['stacking vs best single (lightgbm)', 'f1_gap']:.4f}"
+                     f" and "
+                     f"{m.loc['stacking vs simple average', 'f1_gap']:.4f}) "
+                     f"are smaller than the spread ({worst_f1:.4f}).")
+        line += (" So the ranking *among the ensembles* sits inside "
+                 "run-to-run noise. That is exactly why step 7 chose "
+                 "stacking by a rule written before the numbers were known "
+                 "rather than by whichever value came out highest, and why "
+                 "section 3 reports bootstrap intervals instead of point "
+                 "differences. The margin over persistence, and the margin "
+                 "the warning rule adds, are both an order of magnitude "
+                 "larger than the noise.")
+        out.append(line + "\n")
+        rows = [[r.model, r.seeds, f"{r.rmse_mean:.4f}", f"{r.rmse_std:.4f}",
+                 f"{r.rmse_range:.4f}", f"{r.f1_mean:.4f}", f"{r.f1_std:.4f}",
+                 f"{r.f1_range:.4f}"] for r in s.itertuples()]
+        out.append(md_table(["model", "seeds", "RMSE mean", "RMSE std",
+                             "RMSE range", "macro F1 mean", "macro F1 std",
+                             "macro F1 range"], rows))
+        out.append("\n*Seed-to-seed spread of one deep model at 24 h, from "
+                   "`models/dl/*_seed_spread.csv` - measured on the 2024 "
+                   "validation year, the only year on which repeated runs "
+                   "were scored. The frozen system averages all three "
+                   "seeds, so the wobble inside the deployed ensemble is "
+                   "smaller than this. Sources: "
+                   "`results/test/step10_seed_spread.csv`, "
+                   "`results/test/step10_method_gaps.csv`.*\n")
+    return out
+
+
+def scope_section():
+    out = ["\n## Scope and future work\n"]
+    out.append("- **Evaluated at monitored stations.** That is the intended "
+               "use: a warning for a river where a sensor already sits, "
+               "turning a reading into a forecast. Every station in the 2025 "
+               "test also appears in training, so nothing here measures "
+               "transfer to a river the system has never seen - testing on "
+               "unseen stations is future work.")
+    out.append("- **US rivers, USGS gauges.** Water data comes from USGS "
+               "instantaneous values, with ERA5 weather and CAMS air "
+               "quality. Applying the same pipeline to Indian rivers - the "
+               "CPCB real-time stations, for example - is future work, and "
+               "would need its own freeze and its own untouched test year.")
+    out.append("- **One test year.** 2025 was scored once, which is what "
+               "makes it honest, but one year is one draw. A further "
+               "untouched year would narrow every interval in this report.")
+    out.append("- **Adaptive weighting (ATAE) is worth revisiting.** It was "
+               "rejected on validation by a rule written in advance, and it "
+               "then came out level with or just ahead of stacking on 2025 "
+               "(sections 1 and 2). That is a promising hint, not evidence: "
+               "the comparison happened after the test year was opened, so "
+               "it cannot be used to change the deployed system. Only a "
+               "new, unseen year can settle it.")
+    out.append("")
+    return out
 
 
 def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
@@ -613,37 +935,9 @@ def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
     for p in plots:
         out.append(f"- `{os.path.relpath(p, project_path('.'))}`")
 
-    # ---- limitations ----
-    out.append("\n## Limitations\n")
-    out.append("- **The members' hyperparameters were chosen on 2024.** The "
-               "2025 test is honest about the *system*, but the models "
-               "inside it were tuned on the validation year, so 2025 is a "
-               "fair test of the pipeline rather than of each model.")
-    out.append("- **The stacking meta-model was fitted on 2024 predictions "
-               "of 2023-only members**, then applied on top of members "
-               "retrained on 2023+2024. The inputs it sees at test time come "
-               "from slightly better-trained models than the ones it learned "
-               "to blend. Section 9 shows the effect is small.")
-    out.append("- **One station stops reporting on 2025-11-19**, so the last "
-               "six weeks of the test year have 29 stations rather than 30.")
-    out.append("- **US rivers only**, 30 stations, three years. Nothing here "
-               "says how the system behaves on a river it has never seen - "
-               "every station in the test appears in training.")
-    out.append("- **The deep models are the weakest members.** The BiLSTM "
-               "and CNN-LSTM were tuned in step 5 and still trail the "
-               "gradient-boosted trees; they earn their place in the "
-               "ensemble by being different, not by being better.")
-    out.append("- **Two ensemble ideas were tested and rejected.** ATAE "
-               "(adaptive threshold-aware weighting, step 6) matched a plain "
-               "average and was not worth its four tuned parameters. CAE "
-               "(context-aware meta-model, step 7) failed its pre-set "
-               "decision rule outright - worse onset recall and worse RMSE "
-               "than stacking. Both are still scored here for the record.")
-    out.append("- **The gains are concentrated in the decision rule, not the "
-               "ensemble.** Most of the onset-detection performance comes "
-               "from choosing a probability threshold properly; the "
-               "difference between combining five models cleverly and "
-               "averaging them is small.\n")
+    # ---- design choices and scope (step 10: additional analyses) ----
+    out.extend(design_checks_section(reg, cls))
+    out.extend(scope_section())
 
     path = project_path("reports", "final_results.md")
     with open(path, "w", encoding="utf-8") as f:

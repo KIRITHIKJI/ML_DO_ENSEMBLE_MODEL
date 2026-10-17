@@ -212,13 +212,83 @@ They were checked only for sanity: every file loads and predicts without error, 
 - `results\test\plots\test_onset_vs_false_alarm.png`
 - `results\test\plots\test_rmse_vs_horizon.png`
 - `results\test\plots\test_ablation.png`
+- `results\test\plots\error_correlation_h24.png`
 
-## Limitations
+## Design choices and how they were checked
 
-- **The members' hyperparameters were chosen on 2024.** The 2025 test is honest about the *system*, but the models inside it were tuned on the validation year, so 2025 is a fair test of the pipeline rather than of each model.
-- **The stacking meta-model was fitted on 2024 predictions of 2023-only members**, then applied on top of members retrained on 2023+2024. The inputs it sees at test time come from slightly better-trained models than the ones it learned to blend. Section 9 shows the effect is small.
-- **One station stops reporting on 2025-11-19**, so the last six weeks of the test year have 29 stations rather than 30.
-- **US rivers only**, 30 stations, three years. Nothing here says how the system behaves on a river it has never seen - every station in the test appears in training.
-- **The deep models are the weakest members.** The BiLSTM and CNN-LSTM were tuned in step 5 and still trail the gradient-boosted trees; they earn their place in the ensemble by being different, not by being better.
-- **Two ensemble ideas were tested and rejected.** ATAE (adaptive threshold-aware weighting, step 6) matched a plain average and was not worth its four tuned parameters. CAE (context-aware meta-model, step 7) failed its pre-set decision rule outright - worse onset recall and worse RMSE than stacking. Both are still scored here for the record.
-- **The gains are concentrated in the decision rule, not the ensemble.** Most of the onset-detection performance comes from choosing a probability threshold properly; the difference between combining five models cleverly and averaging them is small.
+Six choices shaped this system. Each one is written down here with the check that was run on it. The checks in this section are **additional analyses**: they re-score predictions that already existed, and none of them was used to choose or change the deployed system, which was fixed in `FROZEN.md` before any 2025 target was read.
+
+**1. Hyperparameters were chosen on the 2024 validation year.** This is the standard three-way split: 2023 trains, 2024 decides, 2025 judges. What 2025 tests is therefore the whole frozen pipeline - architecture, rounds, ensemble and warning thresholds together - rather than each model in isolation, which is the quantity an operator actually deploys. Every one of those settings, plus a SHA-256 for each model file, was committed before the test. The freeze is commit `e4c53b8209c7`, so the claim is checkable rather than asserted.
+
+**2. The stacking meta-model was fitted on 2024 predictions of 2023-only members, then applied on top of members retrained on 2023+2024.** The headline chain therefore has a train/apply mismatch. A second chain has none: 2023-only members, the same meta-model fitted on their 2024 predictions, applied to 2025 (stage 1). If the mismatch were flattering the headline, the consistent chain would be the better of the two.
+It is not. At 24 h the consistent chain gives RMSE 0.6871 against the headline's 0.6718 and onset recall 0.495 against 0.496 - a difference of -0.001 [-0.014, +0.013], which contains zero. The consistent chain is slightly *worse* on RMSE (+0.0153 [+0.0091, +0.0228]) and macro F1 (-0.0022 [-0.0033, -0.0011]), and the gap is the size of what one extra training year bought elsewhere (section 9). On onset recall - the metric the system is built for - the two chains are indistinguishable at 2 of the 4 horizons. The mismatch costs nothing the test can detect; the headline is better because its members saw a second year, not because the meta-model was handed inputs it had not learned to blend.
+
+| horizon | RMSE consistent | RMSE headline | RMSE diff [95% CI] | R2 consistent | R2 headline | macroF1 consistent | macroF1 headline | macroF1 diff [95% CI] | onset consistent | onset headline | onset diff [95% CI] | FA consistent | FA headline | FA diff [95% CI] |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 6 h | 0.5459 | 0.5144 | +0.0314 [+0.0247, +0.0394] | 0.9674 | 0.9710 | 0.9001 | 0.9052 | -0.0051 [-0.0062, -0.0040] | 0.845 | 0.861 | -0.016 [-0.022, -0.010] | 0.0182 | 0.0175 | +0.0007 [+0.0001, +0.0013] |
+| 12 h | 0.6089 | 0.5882 | +0.0206 [+0.0156, +0.0265] | 0.9594 | 0.9621 | 0.8936 | 0.8972 | -0.0036 [-0.0046, -0.0026] | 0.852 | 0.861 | -0.008 [-0.012, -0.005] | 0.0174 | 0.0173 | +0.0001 [-0.0004, +0.0006] |
+| 24 h | 0.6871 | 0.6718 | +0.0153 [+0.0091, +0.0228] | 0.9483 | 0.9505 | 0.8838 | 0.8860 | -0.0022 [-0.0033, -0.0011] | 0.495 | 0.496 | -0.001 [-0.014, +0.013] | 0.0163 | 0.0150 | +0.0012 [+0.0003, +0.0022] |
+| 48 h | 0.8739 | 0.8535 | +0.0207 [+0.0137, +0.0282] | 0.9163 | 0.9202 | 0.8517 | 0.8562 | -0.0045 [-0.0065, -0.0028] | 0.487 | 0.485 | +0.001 [-0.012, +0.014] | 0.0150 | 0.0133 | +0.0018 [+0.0006, +0.0030] |
+
+*Consistent = stage 1 (2023-only members, no train/apply mismatch); headline = stage 2 (members retrained on 2023+2024). Both chains use the same meta-models and the same frozen thresholds, and predict the same 2025 rows. Differences are consistent minus headline, with 1,000 station-week bootstrap resamples; a CI containing zero means the two chains cannot be told apart. No model was retrained for this table. Source: `results/test/step10_pipeline.csv`.*
+
+**3. One station stops reporting on 2025-11-19**, so the last six weeks of the test year have 29 stations rather than 30. The same 2025 predictions were re-scored two more ways - without that station for the whole year, and with all thirty stations but only up to 2025-11-18 - so the question is whether the uneven tail moved the headline.
+It did not. At 24 h, onset recall is 0.496 in the headline and 0.496 to 0.504 across the three subsets; RMSE runs 0.6637 to 0.6718 and macro F1 0.8841 to 0.8860. The false-alarm rate stays inside the 2% promise at every horizon and in every subset (worst 1.96%). Dropping the station helps slightly - it is one of the harder ones - and cutting the year short costs a little on false alarms, because December is a quiet month whose safe hours were diluting the rate. Neither moves a conclusion.
+
+| horizon | subset | rows | onsets | RMSE | R2 | macro F1 | onset recall | false alarm |
+|---|---|---|---|---|---|---|---|---|
+| 6 h | headline (30 stations, full year) | 253,954 | 13,602 | 0.5144 | 0.9710 | 0.9052 | 0.861 | 0.0175 |
+| 6 h | without 05474500 (29 stations, full year) | 247,031 | 13,448 | 0.5052 | 0.9706 | 0.9049 | 0.864 | 0.0176 |
+| 6 h | 30 stations, 2025-01-01..2025-11-18 | 226,165 | 12,924 | 0.5138 | 0.9708 | 0.9034 | 0.863 | 0.0196 |
+| 12 h | headline (30 stations, full year) | 253,954 | 14,063 | 0.5882 | 0.9621 | 0.8972 | 0.861 | 0.0173 |
+| 12 h | without 05474500 (29 stations, full year) | 247,031 | 13,864 | 0.5806 | 0.9611 | 0.8972 | 0.865 | 0.0172 |
+| 12 h | 30 stations, 2025-01-01..2025-11-18 | 226,165 | 13,254 | 0.5846 | 0.9621 | 0.8954 | 0.860 | 0.0193 |
+| 24 h | headline (30 stations, full year) | 253,954 | 5,668 | 0.6718 | 0.9505 | 0.8860 | 0.496 | 0.0150 |
+| 24 h | without 05474500 (29 stations, full year) | 247,031 | 5,501 | 0.6637 | 0.9492 | 0.8860 | 0.504 | 0.0150 |
+| 24 h | 30 stations, 2025-01-01..2025-11-18 | 226,165 | 5,477 | 0.6669 | 0.9507 | 0.8841 | 0.502 | 0.0167 |
+| 48 h | headline (30 stations, full year) | 253,954 | 8,032 | 0.8535 | 0.9202 | 0.8562 | 0.485 | 0.0133 |
+| 48 h | without 05474500 (29 stations, full year) | 247,031 | 7,806 | 0.8429 | 0.9182 | 0.8562 | 0.494 | 0.0132 |
+| 48 h | 30 stations, 2025-01-01..2025-11-18 | 226,165 | 7,793 | 0.8502 | 0.9197 | 0.8529 | 0.491 | 0.0148 |
+
+*Stacking with the frozen warning rule, re-scored only - no model was retrained and no threshold was re-chosen. Source: `results/test/step10_dropout.csv`.*
+
+**4. The two deep models are the weakest members** and were kept anyway. The reason is diversity, not accuracy: an ensemble gains from members that are wrong about different hours, so what matters is how correlated their errors are with the trees'.
+The gradient-boosted trees' 24 h errors correlate 0.963 to 0.976 with each other. A deep model against a boosted tree is lower: XGBoost and LightGBM sit at 0.906 and 0.918 against the BiLSTM, with the whole cross-family range running 0.905 to 0.955. The two deep models are close to interchangeable with each other (0.995), which is why there would be little to gain from a third. **Lower correlation means the members miss different hours, so averaging or stacking them cancels more error than combining models that fail together.** That is what the deep members are in the ensemble for, and it is why they stay in even though each one on its own is beaten by every tree.
+
+|  | random_forest | xgboost | lightgbm | bilstm | cnn_lstm |
+|---|---|---|---|---|---|
+| random_forest | 1.000 | 0.965 | 0.963 | 0.955 | 0.954 |
+| xgboost | 0.965 | 1.000 | 0.976 | 0.906 | 0.905 |
+| lightgbm | 0.963 | 0.976 | 1.000 | 0.918 | 0.918 |
+| bilstm | 0.955 | 0.906 | 0.918 | 1.000 | 0.995 |
+| cnn_lstm | 0.954 | 0.905 | 0.918 | 0.995 | 1.000 |
+
+*Pearson correlation of 24 h errors (`y_pred - y_true`) over the 2025 rows, from the predictions step 8 already wrote. Heatmap: `results/test/plots/error_correlation_h24.png`. **Analysis only - not used to choose or change the system.** Source: `results/test/step10_error_correlation_h24.csv`.*
+
+**5. The warning rule is the main contribution of the decision layer.** Argmax answers *which class is most likely*; a warning system asks *is the chance of Low high enough to act on*, which is a lower bar and a different question. Separating the two is the decision layer's whole job, and on 2025 it is worth more than any choice of ensemble.
+At 24 h the rule lifts onset recall from 0.285 to 0.496 - **1.7 times** as many onsets caught - for a false-alarm rate that rises from 0.46% to 1.50%, still inside the 2% the system promises. For comparison, choosing stacking over the best single model is worth 0.0104 mg/L of RMSE and nothing detectable on macro F1 or onset recall (section 3). The threshold was chosen on out-of-fold 2024 probabilities against a 1.8% internal budget - tighter than the promise on purpose - and frozen before the test.
+
+| horizon | onset recall (argmax) | onset recall (rule) | false alarm (argmax) | false alarm (rule) |
+|---|---|---|---|---|
+| 6 h | 0.800 | 0.861 | 0.0103 | 0.0175 |
+| 12 h | 0.795 | 0.861 | 0.0096 | 0.0173 |
+| 24 h | 0.285 | 0.496 | 0.0046 | 0.0150 |
+| 48 h | 0.380 | 0.485 | 0.0070 | 0.0133 |
+
+**6. The deep models were trained on a GPU with non-deterministic kernels**, so a rerun does not reproduce a run bit for bit. The frozen system handles that by averaging three seeds, and the size of the remaining wobble was measured rather than assumed.
+Across seeds 42-44 the single-model spread at 24 h is bilstm RMSE +-0.0023, macro F1 +-0.0014; cnn_lstm RMSE +-0.0017, macro F1 +-0.0041 (standard deviation over three seeds). The differences the 2025 tables are asked to resolve are of the same order: stacking beats the best single model by 0.0104 mg/L of RMSE and the simple average by 0.0019, against a worst-case seed spread of 0.0023. On macro F1 the gaps (0.0008 and 0.0005) are smaller than the spread (0.0041). So the ranking *among the ensembles* sits inside run-to-run noise. That is exactly why step 7 chose stacking by a rule written before the numbers were known rather than by whichever value came out highest, and why section 3 reports bootstrap intervals instead of point differences. The margin over persistence, and the margin the warning rule adds, are both an order of magnitude larger than the noise.
+
+| model | seeds | RMSE mean | RMSE std | RMSE range | macro F1 mean | macro F1 std | macro F1 range |
+|---|---|---|---|---|---|---|---|
+| bilstm | 42;43;44 | 0.6827 | 0.0023 | 0.0042 | 0.8699 | 0.0014 | 0.0028 |
+| cnn_lstm | 42;43;44 | 0.6804 | 0.0017 | 0.0033 | 0.8742 | 0.0041 | 0.0074 |
+
+*Seed-to-seed spread of one deep model at 24 h, from `models/dl/*_seed_spread.csv` - measured on the 2024 validation year, the only year on which repeated runs were scored. The frozen system averages all three seeds, so the wobble inside the deployed ensemble is smaller than this. Sources: `results/test/step10_seed_spread.csv`, `results/test/step10_method_gaps.csv`.*
+
+
+## Scope and future work
+
+- **Evaluated at monitored stations.** That is the intended use: a warning for a river where a sensor already sits, turning a reading into a forecast. Every station in the 2025 test also appears in training, so nothing here measures transfer to a river the system has never seen - testing on unseen stations is future work.
+- **US rivers, USGS gauges.** Water data comes from USGS instantaneous values, with ERA5 weather and CAMS air quality. Applying the same pipeline to Indian rivers - the CPCB real-time stations, for example - is future work, and would need its own freeze and its own untouched test year.
+- **One test year.** 2025 was scored once, which is what makes it honest, but one year is one draw. A further untouched year would narrow every interval in this report.
+- **Adaptive weighting (ATAE) is worth revisiting.** It was rejected on validation by a rule written in advance, and it then came out level with or just ahead of stacking on 2025 (sections 1 and 2). That is a promising hint, not evidence: the comparison happened after the test year was opened, so it cannot be used to change the deployed system. Only a new, unseen year can settle it.

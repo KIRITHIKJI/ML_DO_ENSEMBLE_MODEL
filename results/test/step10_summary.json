@@ -1,0 +1,12 @@
+{
+  "frozen_system": "stacking",
+  "stage1_rebuild_problems": [],
+  "files": [
+    "step10_pipeline.csv",
+    "step10_dropout.csv",
+    "step10_seed_spread.csv",
+    "step10_method_gaps.csv",
+    "step10_error_correlation_h24.csv",
+    "plots/error_correlation_h24.png"
+  ]
+}

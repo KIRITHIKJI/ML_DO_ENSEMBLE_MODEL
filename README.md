@@ -131,6 +131,11 @@ python -m src.evaluation.final_report    # -> reports/final_results.md
 python -m src.models.stage2 --stage 3    # models for the app (never scored)
 python -m src.models.sanity_stage3       # stage-3 sanity check
 
+# Step 10 - additional analyses on what was already produced.
+# Nothing here changes the frozen system; it re-scores existing predictions.
+python -m src.evaluation.step10_checks   # design checks -> results/test/step10_*
+python -m src.evaluation.final_report    # re-render the report with them
+
 pytest -q                                # the whole test suite
 ```
 
@@ -145,8 +150,8 @@ Five tabs: **Overview** (the problem and the headline numbers),
 readings, and get a forecast plus a WARNING badge), **Monitor** (a station
 through a month of 2025 with the warning periods shaded), **Results** (the
 2025 tables, the onset/false-alarm trade-off, lead times, the ablation and
-the per-station breakdown) and **Method** (how it works, what was rejected,
-and the limitations).
+the per-station breakdown) and **Method** (how it works, what was rejected, the
+design checks, and the scope).
 
 Two example inputs are in `app/sample_data/` - one window taken from just
 before a real low-oxygen event, one from healthy water. The app reads
@@ -186,7 +191,8 @@ src/
                          freeze.py, stage2.py, sanity_stage3.py   (step 8)
                          predict_service.py                       (used by the app)
   evaluation/            metrics.py, calibration.py and one report
-                         module per step
+                         module per step, plus step10_checks.py
+                         (additional analyses, step 10)
 
 models/
   ml/ dl/                step-3 and step-5 members (trained on 2023)
@@ -197,7 +203,8 @@ models/
 
 results/
   val/                   everything measured on 2024
-  test/                  the 2025 results, predictions and plots
+  test/                  the 2025 results, predictions and plots,
+                         and the step10_* design checks
 
 reports/                 one markdown report per step
 app/                     app.py + sample_data/
@@ -229,24 +236,66 @@ exactly 0 on onset recall by definition: it never predicts a change.
 Weather earns its place. Air quality adds almost nothing - worth knowing
 before anyone pays for an air-quality feed.
 
-## Limitations
+## Design choices and how they were checked
 
-- The members' hyperparameters were chosen on 2024, so 2025 is an honest
-  test of the **pipeline**, not of each model in isolation.
-- The stacking meta-model was fitted on 2024 predictions of 2023-only
-  members, then applied on top of members retrained on 2023+2024.
-- One station stops reporting on 2025-11-19, so the last six weeks have 29
-  stations rather than 30.
-- US rivers only, and every station in the test also appears in training.
-  Nothing here says how the system behaves on a river it has never seen.
-- The deep models (BiLSTM, CNN-LSTM) are the weakest members. They earn
-  their place in the ensemble by being different from the trees, not by
-  being better.
-- Most of the gain in catching onsets comes from the decision rule, not
-  from the ensemble. Combining five models cleverly beat averaging them by
-  very little.
-- GPU LSTM training is not bit-for-bit reproducible (cuDNN has no
-  deterministic recurrent kernel). Everything else is.
+Each of these was a real design decision, and each one has a check behind
+it. The checks are **additional analyses**: they re-score predictions that
+already existed, and none of them was used to choose or change the
+deployed system, which was fixed in [FROZEN.md](FROZEN.md) before any 2025
+target was read. Full numbers and tables:
+[reports/final_results.md](reports/final_results.md).
+
+1. **Hyperparameters were chosen on 2024.** The standard three-way split:
+   2023 trains, 2024 decides, 2025 judges. What 2025 tests is the whole
+   frozen pipeline, which is what an operator actually deploys - and the
+   freeze commit makes that claim checkable rather than asserted.
+2. **The stacking meta-model was fitted on 2024 predictions of 2023-only
+   members, then applied on top of members retrained on 2023+2024.** A
+   second chain has no such mismatch (2023-only members throughout), and it
+   is the *worse* of the two: at 24 h, RMSE 0.687 against 0.672, with onset
+   recall 0.495 against 0.496 - a difference of -0.001 [-0.014, +0.013],
+   which contains zero. The headline leads because its members saw an extra
+   year, not because of the mismatch.
+3. **One station stops reporting on 2025-11-19.** Re-scoring the same
+   predictions without that station, and again on all 30 stations up to
+   2025-11-18, moves 24 h onset recall only within 0.496-0.504 and RMSE
+   within 0.664-0.672. The false-alarm rate stays inside the 2% promise in
+   every subset at every horizon.
+4. **The deep models are the weakest members and stay in for diversity.**
+   Their 24 h errors correlate 0.905-0.955 with the trees', against
+   0.963-0.976 among the trees themselves. Lower correlation means the
+   members miss different hours, so combining them cancels more error than
+   combining models that fail together.
+5. **The warning rule is the main contribution of the decision layer.** At
+   24 h it lifts onset recall from 0.285 to 0.496 - 1.7x as many onsets
+   caught - while false alarms go from 0.46% to 1.50%, inside the 2%
+   promise. Choosing stacking over the best single model, by comparison, is
+   worth 0.010 mg/L of RMSE and nothing detectable on macro F1.
+6. **GPU LSTM training is not bit-for-bit reproducible** (cuDNN has no
+   deterministic recurrent kernel), so the frozen system averages three
+   seeds and the remaining wobble was measured: RMSE +-0.0023 and macro F1
+   +-0.0041 across seeds for a single deep model. The gaps between the
+   ensembles are of the same order (0.0104 and 0.0019 mg/L of RMSE), which
+   is why stacking was picked by a rule written in advance and why the
+   report quotes bootstrap intervals. The margins over persistence, and the
+   margin the warning rule adds, are an order of magnitude larger.
+
+## Scope and future work
+
+- **Evaluated at monitored stations** - the intended use: a warning for a
+  river where a sensor already sits. Every test station also appears in
+  training, so testing on rivers not seen in training is future work.
+- **US rivers, USGS gauges.** Applying the pipeline to Indian rivers (the
+  CPCB real-time stations, for example) is future work, and would need its
+  own freeze and its own untouched test year.
+- **One test year.** 2025 was scored once, which is what makes it honest,
+  but one year is one draw; a further untouched year would narrow every
+  interval here.
+- **Adaptive weighting (ATAE) is worth revisiting.** Rejected on validation
+  by a rule written in advance, it then came out level with or just ahead
+  of stacking on 2025. That is a hint, not evidence - the comparison
+  happened after the test year was opened - so only a new, unseen year can
+  settle it.
 
 ## Reports
 
