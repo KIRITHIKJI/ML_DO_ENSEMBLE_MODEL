@@ -637,7 +637,7 @@ result rather than a preference.
         st.image(plot, caption="Correlation of 24 h forecast errors between "
                                "the five members, 2025. Analysis only - not "
                                "used to change the system.",
-                 use_container_width=False)
+                 width=620)
 
     st.subheader("Scope and future work")
     scope = report_section("## Scope and future work")

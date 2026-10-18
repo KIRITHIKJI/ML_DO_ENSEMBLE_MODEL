@@ -29,6 +29,8 @@ temp/
 
 # ── local tool / editor settings ─────────────────────────────────────
 .claude/settings.local.json
+# Playwright MCP profile and trace output from driving the app in a browser.
+.playwright-mcp/
 .DS_Store
 Thumbs.db
 desktop.ini
