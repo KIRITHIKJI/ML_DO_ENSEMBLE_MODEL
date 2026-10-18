@@ -302,11 +302,18 @@ def test_missing_ranges_only_asks_for_what_the_cache_lacks():
 REQUIRED_COLUMNS = ["station", "issued_at", "horizon", "valid_at",
                     "pred_do_mgl", "p_low", "tau", "warning",
                     "model_version", "weather_source", "data_age_hours"]
+# step 12b added two columns to the end of the same schema: whether a
+# prediction was made at all, and what kind of alert the row is.
+SCHEMA_12B = REQUIRED_COLUMNS + ["status", "alert_type"]
+STALE_STATION = "03353415"
 
 
 def test_the_configured_schema_is_the_one_the_brief_asked_for():
-    assert list(D.RUN["columns"]) == REQUIRED_COLUMNS, \
+    assert list(D.RUN["columns"]) == SCHEMA_12B, \
         "run.columns in config_deploy.yaml is not the agreed forecast schema"
+    # the original eleven are unchanged and still come first, so anything
+    # reading the step-12 schema by position still works
+    assert list(D.RUN["columns"])[:len(REQUIRED_COLUMNS)] == REQUIRED_COLUMNS
 
 
 @pytest.fixture
@@ -319,21 +326,41 @@ def fixture_forecast(tmp_path, monkeypatch):
     from src.deploy import run as RUNNER
     issued = pd.Timestamp("2026-10-18 06:00:00")
     rows = []
-    for station, p_base, age in (("02110701", 0.42, 1.0),
-                                 ("02198920", 0.05, 3.5)):
+    # one station of each kind, so every test that reads this fixture sees
+    # all four alert types: an early warning, an ongoing low, a quiet
+    # station and a dead sensor.
+    plan = [("02110701", 0.42, 1.0, 6.2, 1.0),    # Medium now -> early
+            ("02198920", 0.05, 3.5, 6.2, 1.0),    # Medium now -> none
+            ("02110550", 0.80, 2.0, 3.1, 0.0)]    # already Low -> ongoing
+    for station, p_base, age, do_now, cls_now in plan:
         for h in HORIZONS:
             tau = 0.24
             # p_base scales with the horizon rather than having a constant
             # added, so the quiet station stays quiet at 48 h too
             p_low = min(0.99, p_base * (1 + h / 100.0))
+            warn = p_low >= tau
             rows.append({
                 "station": station, "issued_at": issued, "horizon": h,
                 "valid_at": issued.floor("h") + pd.Timedelta(hours=h),
                 "pred_do_mgl": 6.0 - p_low, "p_low": p_low, "tau": tau,
-                "warning": p_low >= tau, "model_version": "final-testfixture",
+                "warning": warn, "model_version": "final-testfixture",
                 "weather_source": "forecast_api", "data_age_hours": age,
-                "observed_at": issued.floor("h"), "do_now_mgl": 6.2,
-                "class_now": 1.0, "method": "stacking"})
+                "status": D.RUN["fresh_status"],
+                "alert_type": RUNNER.classify_alert(cls_now, warn),
+                "observed_at": issued.floor("h"), "do_now_mgl": do_now,
+                "class_now": cls_now, "method": "stacking"})
+    # and a station whose sensor stopped reporting: no prediction at all
+    for h in HORIZONS:
+        rows.append({
+            "station": STALE_STATION, "issued_at": issued, "horizon": h,
+            "valid_at": issued.floor("h") + pd.Timedelta(hours=h),
+            "pred_do_mgl": np.nan, "p_low": np.nan, "tau": np.nan,
+            "warning": False, "model_version": "final-testfixture",
+            "weather_source": "era5_archive", "data_age_hours": 1069.0,
+            "status": D.RUN["stale_status"],
+            "alert_type": D.RUN["alert_types"]["stale"],
+            "observed_at": issued.floor("h") - pd.Timedelta(hours=1069),
+            "do_now_mgl": 5.5, "class_now": 1.0, "method": "none - stale"})
     frame = pd.DataFrame(rows)
     folder = tmp_path / "live"
     folder.mkdir()
@@ -356,10 +383,23 @@ def test_the_forecast_csv_has_the_promised_schema(fixture_forecast):
     assert on_disk["weather_source"].notna().all(), \
         "every row must say where its weather came from"
     assert (on_disk["data_age_hours"] >= 0).all()
-    assert on_disk["p_low"].between(0, 1).all()
-    # the warning flag must agree with the rule it claims to apply
-    rule = on_disk["p_low"] >= on_disk["tau"]
-    assert (on_disk["warning"].astype(bool) == rule).all(), \
+    for col in ("status", "alert_type"):
+        assert on_disk[col].notna().all(), f"every row needs a {col}"
+    assert set(on_disk["alert_type"]) <= set(D.RUN["alert_types"].values())
+
+    # the stale rows carry the outage instead of numbers
+    stale = on_disk[on_disk["alert_type"] == D.RUN["alert_types"]["stale"]]
+    assert len(stale), "the fixture has no stale station"
+    assert stale["pred_do_mgl"].isna().all()
+    assert stale["p_low"].isna().all()
+    assert not stale["warning"].astype(bool).any()
+    assert (stale["status"] == D.RUN["stale_status"]).all()
+
+    # and where a prediction WAS made, the warning flag agrees with the rule
+    live = on_disk.drop(stale.index)
+    assert live["p_low"].between(0, 1).all()
+    rule = live["p_low"] >= live["tau"]
+    assert (live["warning"].astype(bool) == rule).all(), \
         "the warning column does not match P(Low) >= tau"
 
 
@@ -521,7 +561,18 @@ def test_health_reports_the_latest_run(client):
     assert sorted(body["horizons"]) == sorted(HORIZONS)
     assert body["model_version"] == ["final-testfixture"]
     assert isinstance(body["age_minutes"], float)
-    assert body["stations_warned"] == 1
+    # the early warning and the ongoing low are warned; the quiet station
+    # and the dead sensor are not
+    assert body["stations_warned"] == 2
+    assert body["stations_early_warning"] == 1
+    assert body["stations_ongoing_low"] == 1
+    # the stale station is named, not merely absent
+    assert body["stations_stale"] == [STALE_STATION]
+    assert body["stations_forecast"] == 3
+    assert body["max_data_age_hours"] == 1069.0
+    assert body["max_data_age_hours_forecast"] == 3.5,         "the stale station's age must not be reported as a forecast age"
+    assert body["max_data_age_hours_allowed"] == float(
+        D.RUN["max_data_age_hours"])
 
 
 def test_warnings_returns_only_the_stations_under_warning(client):
@@ -529,15 +580,16 @@ def test_warnings_returns_only_the_stations_under_warning(client):
     r = c.get("/warnings")
     assert r.status_code == 200
     body = r.json()
-    assert body["n_stations"] == 1
-    assert {w["station"] for w in body["warnings"]} == {"02110701"}
+    assert body["n_stations"] == 2
+    assert {w["station"] for w in body["warnings"]} == {"02110701",
+                                                        "02110550"}
     for w in body["warnings"]:
         assert w["warning"] is True
-        for col in REQUIRED_COLUMNS:
+        for col in SCHEMA_12B:
             assert col in w, f"/warnings dropped {col}"
     # and it can be narrowed to one horizon
     one = c.get(f"/warnings?horizon={HORIZONS[0]}").json()
-    assert one["n_rows"] == 1
+    assert one["n_rows"] == 2
     assert c.get("/warnings?horizon=7").status_code == 400
 
 
@@ -551,8 +603,11 @@ def test_forecast_for_one_station_has_every_horizon(client):
     assert body["any_warning"] is False
     assert body["model_version"] == "final-testfixture"
     assert body["data_age_hours"] == 3.5
+    assert body["stale"] is False
+    assert body["status"] == D.RUN["fresh_status"]
+    assert body["any_early_warning"] is False
     for h in body["horizons"]:
-        for col in REQUIRED_COLUMNS:
+        for col in SCHEMA_12B:
             assert col in h
 
 

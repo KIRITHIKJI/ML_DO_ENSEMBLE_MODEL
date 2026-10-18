@@ -11,9 +11,16 @@ water data, and reports:
   * performance over a rolling `monitor.window_days` window - RMSE, macro
     F1, onset recall and false-alarm rate, per station and overall, at every
     horizon;
+  * the same early-warning numbers for the `early_warning` rows ALONE, so a
+    station that has been sitting under 5 mg/L for a month cannot pad the
+    figures with warnings that only repeated what the sensor said;
   * DATA DRIFT: features outside the range they had in training;
   * PERFORMANCE DRIFT: a false-alarm rate above the 2% the system promises,
     measured over the same 30-day window.
+
+Rows whose `alert_type` is `stale` are not scored at all: no prediction was
+made for them, so counting them would turn a sensor outage into a run of
+correct "no warning" calls.
 
 The metrics are `src/evaluation/metrics.py`. Nothing is retrained here and
 nothing is tuned; a flag is a flag, and the decision to act on it belongs to
@@ -40,6 +47,7 @@ HORIZONS = D.HORIZONS
 LOW_CLASS = D.LOW_CLASS
 MON = D.MON
 RUN = D.RUN
+ALERT = RUN["alert_types"]
 
 
 # ---------------------------------------------------------------------------
@@ -86,11 +94,24 @@ def joined(now=None):
     Logged forecasts with the truth attached, for the rows that can be
     scored. `class_now` is the class at the hour the forecast was made,
     which is what the early-warning metrics need.
+
+    Rows whose `alert_type` is `stale` are DROPPED. No prediction was made
+    for them - `pred_do_mgl` and `p_low` are null - so scoring them would
+    be scoring the sensor outage, and leaving them in would quietly count
+    every one as a correct "no warning".
     """
     lg, obs = log(), observed()
     if lg is None or obs is None or not len(lg):
         return None
+    n_before = len(lg)
+    if "alert_type" in lg.columns:
+        lg = lg[lg["alert_type"].astype(str) != ALERT["stale"]]
+    lg = lg[lg["pred_do_mgl"].notna()] if "pred_do_mgl" in lg.columns else lg
+    if not len(lg):
+        return None
     d = lg.merge(obs, on=["station", "valid_at"], how="left")
+    # `attrs` does not survive a merge, so it is set afterwards
+    d.attrs["n_stale_dropped"] = int(n_before - len(lg))
     d["y_true_cls"] = to_class(d["y_true_reg"])
     if "do_now_mgl" in d.columns:
         d["class_now"] = to_class(d["do_now_mgl"])
@@ -102,12 +123,44 @@ def joined(now=None):
     # warning flag is logged, so Medium is the conservative reading of "not
     # Low" for the hours nothing fired.
     d.loc[~d["warning"].astype(bool), "pred_warn"] = 1
+    if "alert_type" not in d.columns:
+        d["alert_type"] = ALERT["none"]
     return d
 
 
 # ---------------------------------------------------------------------------
 # Rolling performance
 # ---------------------------------------------------------------------------
+EMPTY_SCORES = {"rmse": np.nan, "r2": np.nan, "f1_macro": np.nan,
+                "onset_recall": np.nan, "false_alarm_rate": np.nan,
+                "n_onsets": 0, "judged": False,
+                "flag_performance_drift": False,
+                "n_early_warning": 0, "n_ongoing_low": 0,
+                "onset_recall_early": np.nan,
+                "false_alarm_rate_early": np.nan,
+                "onset_precision_early": np.nan,
+                "n_onsets_early": 0, "n_rows_early": 0}
+
+
+def early_warning_only(g):
+    """
+    The same rows, with every warning that was only telling the operator
+    what the sensor already said turned back into a non-warning.
+
+    `ongoing_low` rows are hours whose DO was ALREADY below the threshold.
+    Keeping them in inflates nothing on recall - the onset denominator
+    already excludes them - but it does mean a station sitting under 5 mg/L
+    for a month contributes a long run of trivially-correct warnings to the
+    classification figures. Scoring the `early_warning` rows on their own
+    answers the question the system is actually built for: when safe water
+    was predicted to go Low, was it right?
+    """
+    out = g.copy()
+    is_early = out["alert_type"].astype(str) == ALERT["early_warning"]
+    out["pred_warn_early"] = np.where(is_early, LOW_CLASS, 1)
+    return out, is_early
+
+
 def score_window(d, label, station=None):
     """Every horizon, for one slice of the joined log."""
     rows = []
@@ -119,10 +172,7 @@ def score_window(d, label, station=None):
         row = {"window": label, "station": station or "ALL", "horizon": h,
                "n": n}
         if n < int(MON["min_rows"]):
-            row.update({"rmse": np.nan, "r2": np.nan, "f1_macro": np.nan,
-                        "onset_recall": np.nan, "false_alarm_rate": np.nan,
-                        "n_onsets": 0, "judged": False,
-                        "flag_performance_drift": False})
+            row.update(EMPTY_SCORES)
             rows.append(row)
             continue
         rm = regression_metrics(g["y_true_reg"], g["pred_do_mgl"])
@@ -130,13 +180,28 @@ def score_window(d, label, station=None):
         ew = early_warning_metrics(g["class_now"], g["y_true_cls"],
                                    g["pred_warn"])
         far = ew["false_alarm_rate"]
+
+        # the early-warning partition, scored on its own
+        ge, is_early = early_warning_only(g)
+        ewe = early_warning_metrics(ge["class_now"], ge["y_true_cls"],
+                                    ge["pred_warn_early"])
+
         row.update({"rmse": rm["rmse"], "r2": rm["r2"],
                     "f1_macro": cm["f1_macro"],
                     "onset_recall": ew["onset_recall"],
                     "false_alarm_rate": far,
                     "n_onsets": ew["n_onsets"], "judged": True,
                     "flag_performance_drift": bool(
-                        far == far and far > float(MON["max_false_alarm_rate"]))})
+                        far == far and far > float(MON["max_false_alarm_rate"])),
+                    "n_early_warning": int(is_early.sum()),
+                    "n_ongoing_low": int(
+                        (g["alert_type"].astype(str)
+                         == ALERT["ongoing_low"]).sum()),
+                    "n_rows_early": int((g["class_now"] != LOW_CLASS).sum()),
+                    "onset_recall_early": ewe["onset_recall"],
+                    "false_alarm_rate_early": ewe["false_alarm_rate"],
+                    "onset_precision_early": ewe["onset_precision"],
+                    "n_onsets_early": ewe["n_onsets"]})
         rows.append(row)
     return rows
 
@@ -248,8 +313,11 @@ def main():
             out_path, index=False)
     else:
         scoreable = int(d["y_true_reg"].notna().sum())
+        dropped = int(d.attrs.get("n_stale_dropped", 0))
         D.log(f"  {len(d):,} logged forecast rows, {scoreable:,} with the "
-              f"real DO already in ({d['station'].nunique()} stations)")
+              f"real DO already in ({d['station'].nunique()} stations)"
+              + (f"; {dropped:,} stale rows dropped - no prediction was "
+                 f"made for them" if dropped else ""))
         perf = performance(d, now)
         perf.to_csv(out_path, index=False)
         head = 24 if 24 in HORIZONS else HORIZONS[len(HORIZONS) // 2]
@@ -265,6 +333,19 @@ def main():
             D.log(f"  {r.horizon:>4}{r.n:>8}{r.rmse:>9.4f}{r.f1_macro:>9.4f}"
                   f"{r.onset_recall:>8.3f}{r.false_alarm_rate:>9.4f}  "
                   + ("PERFORMANCE DRIFT" if r.flag_performance_drift else "ok"))
+        D.log(f"\n  early warnings only (safe water predicted to go Low; "
+              f"the 'already Low' rows are not counted as warnings here)")
+        D.log(f"  {'h':>4}{'rows':>8}{'early':>8}{'ongoing':>9}"
+              f"{'onsets':>8}{'onset':>8}{'falseAl':>9}{'precision':>11}")
+        for r in overall.itertuples():
+            if not r.judged:
+                D.log(f"  {r.horizon:>4}{r.n:>8}  too few scoreable rows yet")
+                continue
+            D.log(f"  {r.horizon:>4}{r.n_rows_early:>8}"
+                  f"{r.n_early_warning:>8}{r.n_ongoing_low:>9}"
+                  f"{r.n_onsets_early:>8}{r.onset_recall_early:>8.3f}"
+                  f"{r.false_alarm_rate_early:>9.4f}"
+                  f"{r.onset_precision_early:>11.3f}")
 
     drift = data_drift(now)
     drift.to_csv(drift_path, index=False)

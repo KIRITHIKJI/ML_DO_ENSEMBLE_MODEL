@@ -161,22 +161,46 @@ def _all_text(at):
 
 
 def _fixture_forecast(folder):
-    """A two-station forecast file in the real schema."""
+    """
+    A forecast file in the real schema with one station of EACH alert type,
+    so the Live tab has to render all four of its groups.
+    """
+    import numpy as np
     from src.deploy import common as D
+    from src.deploy import run as RUNNER
     issued = pd.Timestamp("2026-10-18 06:00:00")
     rows = []
-    for station, base in (("02110701", 0.45), ("02198920", 0.02)):
+    # (station, P(Low) base, DO now, class now) -> early / none / ongoing low
+    plan = [("02110701", 0.45, 6.4, 1.0),
+            ("02198920", 0.02, 6.4, 1.0),
+            ("02110550", 0.80, 3.1, 0.0)]
+    for station, base, do_now, cls_now in plan:
         for h in load_config()["horizons"]:
             p_low = min(0.99, base + 0.01 * h)
+            warn = p_low >= 0.24
             rows.append({
                 "station": station, "issued_at": issued, "horizon": h,
                 "valid_at": issued + pd.Timedelta(hours=h),
                 "pred_do_mgl": 6.0 - p_low, "p_low": p_low, "tau": 0.24,
-                "warning": p_low >= 0.24,
+                "warning": warn,
                 "model_version": D.model_version(),
                 "weather_source": "forecast_api", "data_age_hours": 2.0,
-                "observed_at": issued, "do_now_mgl": 6.4, "class_now": 1.0,
-                "method": "stacking"})
+                "status": D.RUN["fresh_status"],
+                "alert_type": RUNNER.classify_alert(cls_now, warn),
+                "observed_at": issued, "do_now_mgl": do_now,
+                "class_now": cls_now, "method": "stacking"})
+    # a station whose sensor stopped reporting: no prediction at all
+    for h in load_config()["horizons"]:
+        rows.append({
+            "station": "03353415", "issued_at": issued, "horizon": h,
+            "valid_at": issued + pd.Timedelta(hours=h),
+            "pred_do_mgl": np.nan, "p_low": np.nan, "tau": np.nan,
+            "warning": False, "model_version": D.model_version(),
+            "weather_source": "era5_archive", "data_age_hours": 1069.0,
+            "status": D.RUN["stale_status"],
+            "alert_type": D.RUN["alert_types"]["stale"],
+            "observed_at": issued - pd.Timedelta(hours=1069),
+            "do_now_mgl": 5.5, "class_now": 1.0, "method": "none - stale"})
     path = os.path.join(str(folder), "forecast_20261018T060000Z.csv")
     pd.DataFrame(rows).to_csv(path, index=False)
     return path
@@ -226,12 +250,60 @@ def test_the_live_tab_renders_with_a_live_run(app_with_live):
     text = _all_text(app_with_live)
     assert "No live run yet" not in text, \
         "the tab shows the empty state although a forecast exists"
-    for station in ("02110701", "02198920"):
+    for station in ("02110701", "02198920", "02110550"):
         assert f"**{station}**" in text, \
             f"the Live tab does not show {station}"
     assert "WARNING" in text, "no warning verdict was rendered"
     assert "chance of Low" in text, \
         "the decision against tau is not spelled out in words"
+
+
+def test_the_live_tab_renders_all_four_alert_groups(app_with_live):
+    """
+    Step 12b. The fixture has one station of each kind, so all four groups
+    must appear - and the early warnings must come FIRST, because that is
+    the only group an operator could not read straight off the sensor.
+    """
+    from src.deploy import common as D
+    text = _all_text(app_with_live)
+    low = load_config()["target"]["thresholds"]["low"]
+    headings = [h.value for h in app_with_live.subheader]
+    joined = "\n".join(headings)
+
+    assert any("Early warnings" in h for h in headings), \
+        "no early-warning group"
+    assert any(f"Already below {low}" in h for h in headings), \
+        "the already-Low stations are not in their own group"
+    assert any("Sensor offline" in h for h in headings), \
+        "the stale stations are not in their own group"
+    assert "No warning" in text, "the no-warning group is missing"
+
+    early_at = joined.index("Early warnings")
+    assert early_at < joined.index("Already below"), \
+        "the already-Low group is shown above the early warnings"
+    assert early_at < joined.index("Sensor offline"), \
+        "the offline sensors are shown above the early warnings"
+
+    # the counts, and the words that say what each group means
+    assert "⚠ Early warnings" in text or "Early warnings" in text
+    assert "safe water" in text.lower()
+    assert "no forecast was issued" in text.lower()
+    assert f"{float(D.RUN['max_data_age_hours']):g} h" in text, \
+        "the stale group does not state the age limit it applied"
+
+
+def test_the_live_tab_never_shows_a_stale_station_as_warned(app_with_live):
+    """
+    A dead sensor must not be presented as a forecast. Its station appears
+    only under the offline group, labelled as such, with no predicted DO.
+    """
+    text = _all_text(app_with_live)
+    assert "SENSOR OFFLINE" in text, \
+        "the stale station is not labelled as an outage"
+    # the stale station's own row says no forecast was issued
+    assert "03353415" in text
+    assert "No forecast issued" in text or "no forecast was issued" \
+        in text.lower()
 
 
 def test_the_live_tab_does_not_run_a_forecast(app_with_live):

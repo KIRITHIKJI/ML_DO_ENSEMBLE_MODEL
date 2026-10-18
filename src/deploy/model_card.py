@@ -339,10 +339,20 @@ def build():
         f"no deterministic recurrent kernel, so the system averages three "
         f"seeds; the remaining spread was measured rather than assumed "
         f"(design check 6 in the report).",
-        f"- **Sensor faults are not detected.** A stuck or drifting DO "
-        f"sensor is fed straight in. `python -m src.deploy.monitor` flags "
-        f"features that leave their training range, which is a warning "
-        f"about the data, not a repair of it.",
+        f"- **A sensor that STOPS reporting is caught; one that lies is "
+        f"not.** Past {float(D.RUN['max_data_age_hours']):g} h of silence a "
+        f"station gets `status` \"{D.RUN['stale_status']}\" and no "
+        f"prediction at all, because every input is a lag of the DO it last "
+        f"sent. A stuck or drifting sensor that keeps reporting is fed "
+        f"straight in; `python -m src.deploy.monitor` flags features that "
+        f"leave their training range, which is a warning about the data, "
+        f"not a repair of it.",
+        f"- **An alert is not automatically an early warning.** "
+        f"`alert_type` separates water predicted to go Low "
+        f"(`early_warning`) from water already below the threshold "
+        f"(`ongoing_low`), which an operator can read off the sensor. Only "
+        f"the first is what this model is for, and the monitoring scores it "
+        f"on its own.",
         f"- **Gaps are carried forward, not interpolated**, for at most "
         f"{CFG['cleaning']['max_gap_fill_hours']} h. Longer gaps stay "
         f"missing and the hour is not forecast; `data_age_hours` in every "
@@ -362,6 +372,12 @@ def build():
         f"| schedule | `{D.RUN['batch_file']}`, {D.RUN['schedule']}, "
         f"Windows Task Scheduler |\n"
         f"| log | `{D.RUN['log_parquet']}` |\n"
+        f"| stale-data guard | no forecast when the newest DO reading is "
+        f"older than **{float(D.RUN['max_data_age_hours']):g} h**; the row "
+        f"carries `{D.RUN['stale_status']}` and never a warning |\n"
+        f"| alert types | "
+        + ", ".join(f"`{v}`" for v in D.RUN["alert_types"].values())
+        + " |\n"
         f"| monitoring | `python -m src.deploy.monitor` → "
         f"`{D.MON['out_csv']}`, `{D.MON['drift_csv']}` |\n"
         f"| drift limits | false alarms > {D.MON['max_false_alarm_rate']:.0%} "

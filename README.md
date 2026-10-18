@@ -168,10 +168,32 @@ python -m src.deploy.retrain --dry-run   # exercise the promotion gate
 A run writes `results/live/forecast_<UTC timestamp>.csv` - one row per
 station and horizon, carrying the predicted DO, P(Low), the frozen
 threshold tau, the warning flag, the **model version id**, the **weather
-source** for that hour and how old the newest reading was - and appends the
-same rows to `results/live/log.parquet`. It prints which stations are
-under warning and which were skipped, with the reason. A station offline,
-an API down or a missing column costs that station and nothing else.
+source** for that hour, how old the newest reading was, a `status` and an
+`alert_type` - and appends the same rows to `results/live/log.parquet`. It
+prints the counts per alert type, the early warnings, and whatever was
+skipped, with the reason. A station offline, an API down or a missing
+column costs that station and nothing else.
+
+Two things the rows are careful about:
+
+- **A stale reading produces no forecast.** Every input the models take is
+  a lag or a rolling statistic of the DO the sensor last sent, so a reading
+  from days ago yields a confident answer about a river nobody has looked at
+  since - and it looks exactly like a fresh one. Past
+  `run.max_data_age_hours` (6 h) the station gets `status`
+  `"stale - sensor offline"`, no predicted DO, no P(Low), and `warning`
+  False. It is never handed to the models at all, and it can never raise a
+  warning. `GET /warnings` excludes these stations; `GET /health` names
+  them.
+- **"Already Low" is not an early warning.** `alert_type` separates the
+  two: `early_warning` is water that is Medium or Good now and is predicted
+  to drop below 5 mg/L - the only thing here an operator could not read off
+  the sensor - against `ongoing_low` for water already below it, `none`
+  when the rule did not fire, and `stale`. The Live tab groups the stations
+  the same way, early warnings first, and `python -m src.deploy.monitor`
+  scores the early-warning rows on their own so a station sitting under
+  5 mg/L for a month cannot pad the figures with warnings that only
+  repeated the sensor.
 
 ### Scheduling it hourly on Windows
 
@@ -238,9 +260,11 @@ Six tabs: **Overview** (the problem and the headline numbers), **Predict**
 (pick a station and hour, or upload a window of hourly readings, and get a
 forecast plus a WARNING badge), **Monitor** (a station through a month of
 2025 with the warning periods shaded), **Live** (the deployed system right
-now: when it last ran, every station sorted by risk, P(Low) against tau,
-data age and weather source, the stations it skipped, and the monitoring
-numbers), **Results** (the 2025 tables, the onset/false-alarm trade-off,
+now: when it last ran, then the stations in four groups - **early
+warnings** first, then those already below 5 mg/L, then the sensors that
+are offline, then the rest - each with P(Low) against tau, data age and
+weather source, plus the stations it skipped and the monitoring numbers),
+**Results** (the 2025 tables, the onset/false-alarm trade-off,
 lead times, the ablation and the per-station breakdown) and **Method** (how
 it works, what was rejected, the design checks, and the scope).
 

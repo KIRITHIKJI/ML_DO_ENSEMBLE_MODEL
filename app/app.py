@@ -10,9 +10,16 @@ slide, it came out of a file that the pipeline wrote.
 
 The layout follows reports/ui_audit.md. Each tab has one audience and one
 job: Overview answers a reviewer in five seconds, Predict is a live demo
-on one station, Monitor is a month of warnings against reality, Results is
-the full comparison for someone looking for the hole in it, and Method is
-how it works and what was checked.
+on one station, Monitor is a month of warnings against reality, Live is the
+deployed system as it stands now, Results is the full comparison for
+someone looking for the hole in it, and Method is how it works and what was
+checked.
+
+The Live tab groups stations by `alert_type`, because the four cases are
+different operational facts: an early warning (safe water predicted to go
+Low) is the only one an operator could not read off the sensor, water that
+is already Low is true but not news, and a sensor that stopped reporting is
+an outage with no forecast at all.
 """
 
 import base64
@@ -387,6 +394,12 @@ LIVE_DIR = DEPLOY.RUN["results_dir"]
 LIVE_BATCH = DEPLOY.RUN["batch_file"]
 MONITOR_DAYS = DEPLOY.MON["window_days"]
 MONITOR_FA = DEPLOY.MON["max_false_alarm_rate"]
+MAX_AGE_H = float(DEPLOY.RUN["max_data_age_hours"])
+ALERT = DEPLOY.RUN["alert_types"]
+# early warnings first: the only group here an operator could not read
+# straight off the sensor
+ALERT_ORDER = [ALERT["early_warning"], ALERT["ongoing_low"],
+               ALERT["stale"], ALERT["none"]]
 
 
 @st.cache_data(show_spinner=False)
@@ -437,6 +450,116 @@ def load_model_card():
 
 
 MODEL_CARD = load_model_card()
+
+
+def station_alert(g):
+    """
+    One station's worst alert type across the horizons, in the order of the
+    four groups: an early warning at any horizon makes the station an
+    early-warning station.
+    """
+    kinds = set(g["alert_type"].astype(str)) if "alert_type" in g.columns \
+        else set()
+    for name in ALERT_ORDER:
+        if name in kinds:
+            return name
+    return ALERT["none"]
+
+
+def station_groups(df):
+    """
+    {alert type: [stations]}, each list ordered by the highest chance of Low
+    so the station nearest its threshold is first. A forecast file written
+    before step 12b has no `alert_type`, so every station falls back to
+    "warning / no warning" and still renders.
+    """
+    out = {name: [] for name in ALERT_ORDER}
+    if "alert_type" not in df.columns:
+        df = df.copy()
+        df["alert_type"] = np.where(df["warning"].astype(bool),
+                                    ALERT["early_warning"], ALERT["none"])
+    risk = (df.groupby("station")["p_low"].max()
+            .sort_values(ascending=False, na_position="last"))
+    for station in risk.index:
+        g = df[df["station"] == station]
+        out[station_alert(g)].append(station)
+    return out
+
+
+def render_station(df, station, highlight=False):
+    """
+    One station's row of horizon cards. `highlight` tints the header, which
+    is how an early warning is marked out from the groups below it - the
+    word "WARNING" in the badge carries the same thing without the colour.
+    """
+    g = df[df["station"] == station].sort_values("horizon")
+    first = g.iloc[0]
+    warn_any = bool(g["warning"].astype(bool).any())
+    stale = str(first.get("alert_type", "")) == ALERT["stale"]
+    name = str(STATIONS.set_index("site_no")["name"].get(station, ""))[:44]
+    head = st.columns([3, 1, 1, 1, 1])
+    label = f"**{station}** — {name}"
+    head[0].markdown(
+        f"<div style='background:{DEPLOY_TINT};padding:4px 8px;"
+        f"border-radius:6px'>{label}</div>" if highlight else label,
+        unsafe_allow_html=True)
+    if stale:
+        head[1].markdown(chip("SENSOR OFFLINE", INK), unsafe_allow_html=True)
+    else:
+        head[1].markdown(verdict_badge(warn_any), unsafe_allow_html=True)
+    now_cls = (CLASS_NAMES[int(PS.classify(first["do_now_mgl"]))]
+               if "do_now_mgl" in g.columns
+               and pd.notna(first["do_now_mgl"]) else None)
+    if now_cls:
+        head[2].markdown(
+            f"DO now **{first['do_now_mgl']:.2f}** mg/L<br>"
+            + class_chip(now_cls), unsafe_allow_html=True)
+    else:
+        head[2].markdown("DO now —")
+    head[3].markdown(
+        f"<span style='font-size:12.5px'>data age "
+        f"<b>{first['data_age_hours']:.1f} h</b></span>",
+        unsafe_allow_html=True)
+    head[4].markdown(
+        chip(str(first["weather_source"]).replace("_", " "),
+             BLUE if "era5" in str(first["weather_source"]) else AMBER),
+        unsafe_allow_html=True)
+
+    if stale:
+        st.markdown(
+            f"<span style='font-size:12.5px'>No forecast issued: the last "
+            f"reading is <b>{first['data_age_hours']:.1f} h</b> old, over "
+            f"the {MAX_AGE_H:g} h limit.</span>", unsafe_allow_html=True)
+        st.divider()
+        return
+
+    cols = st.columns(len(HORIZONS))
+    for col, r in zip(cols, g.itertuples()):
+        with col:
+            tau = None if pd.isna(r.tau) else float(r.tau)
+            kind = str(getattr(r, "alert_type", ""))
+            st.markdown(
+                f"<span style='font-size:12.5px'><b>{r.horizon} h</b>"
+                f" → {pd.Timestamp(r.valid_at):%d %b %H:%M} UTC"
+                f"</span>", unsafe_allow_html=True)
+            st.markdown(big_number(f"{r.pred_do_mgl:.2f}", "mg/L"),
+                        unsafe_allow_html=True)
+            st.markdown(decision_bar(r.p_low, tau), unsafe_allow_html=True)
+            rel = ("at or above" if tau is not None and r.p_low >= tau
+                   else "below")
+            st.markdown(
+                f"<span style='font-size:12px'><b>{r.p_low:.1%}</b> "
+                f"chance of Low — {rel} τ="
+                f"{'—' if tau is None else format(tau, '.0%')}"
+                f"</span>", unsafe_allow_html=True)
+            if kind == ALERT["early_warning"]:
+                st.markdown(chip("early warning", WARN_BG, "⚠"),
+                            unsafe_allow_html=True)
+            elif kind == ALERT["ongoing_low"]:
+                st.markdown(chip("already low", STATUS["Low"][0], "▲"),
+                            unsafe_allow_html=True)
+    st.divider()
+
 
 REG = load_csv("metrics_regression_stage2.csv")
 CLS = load_csv("metrics_classification_stage2.csv")
@@ -991,16 +1114,24 @@ rows to `{LIVE_DIR}/log.parquet`, and this tab reads the newest file.
         issued = pd.Timestamp(df["issued_at"].max())
         now = pd.Timestamp.utcnow().tz_localize(None)
         age_min = (now - issued).total_seconds() / 60.0
-        at_head = df[df["horizon"] == HEADLINE_H]
-        warned_stations = sorted(set(df.loc[df["warning"].astype(bool),
-                                            "station"]))
+        # Stale rows carry no prediction, so they are not part of "forecast"
+        # or of any warning count. They get their own group below.
+        is_stale = (df["alert_type"].astype(str) == ALERT["stale"]
+                    if "alert_type" in df.columns
+                    else pd.Series(False, index=df.index))
+        live_rows = df[~is_stale]
+        at_head = live_rows[live_rows["horizon"] == HEADLINE_H]
+        warned_stations = sorted(set(
+            live_rows.loc[live_rows["warning"].astype(bool), "station"]))
 
         k = st.columns(5)
         k[0].metric("Last run",
                     f"{age_min / 60:.1f} h ago" if age_min >= 90
                     else f"{age_min:.0f} min ago",
                     f"{issued:%Y-%m-%d %H:%M} UTC", delta_color="off")
-        k[1].metric("Stations forecast", f"{df['station'].nunique()}",
+        k[1].metric("Stations forecast",
+                    f"{live_rows['station'].nunique()}",
+                    f"of {df['station'].nunique()} · "
                     f"{len(HORIZONS)} horizons each", delta_color="off")
         k[2].metric("Under warning now", f"{len(warned_stations)}",
                     f"at any of {', '.join(str(h) for h in HORIZONS)} h",
@@ -1008,9 +1139,10 @@ rows to `{LIVE_DIR}/log.parquet`, and this tab reads the newest file.
         k[3].metric(f"Warned at {HEADLINE_H} h",
                     f"{int(at_head['warning'].astype(bool).sum())}"
                     f" of {len(at_head)}")
-        k[4].metric("Oldest reading",
-                    f"{df['data_age_hours'].max():.1f} h",
-                    "sensor lag", delta_color="off")
+        k[4].metric("Oldest reading used",
+                    f"{live_rows['data_age_hours'].max():.1f} h"
+                    if len(live_rows) else "—",
+                    f"limit {MAX_AGE_H:g} h", delta_color="off")
 
         versions = sorted(set(df["model_version"].astype(str)))
         sources = df["weather_source"].value_counts()
@@ -1026,59 +1158,100 @@ rows to `{LIVE_DIR}/log.parquet`, and this tab reads the newest file.
                        f"hourly schedule should keep this under an hour — "
                        f"check the task and `{LIVE_DIR}/run_live.log`.")
 
-        st.subheader("Every station, worst first")
-        st.caption("Sorted by the highest chance of Low across the "
-                   "horizons. The bar is P(Low); the tick on it is the "
-                   "frozen warning threshold τ, so the comparison that *is* "
-                   "the decision is drawn rather than left as arithmetic.")
-        risk = (df.groupby("station")["p_low"].max()
-                .sort_values(ascending=False))
-        for station in risk.index:
-            g = df[df["station"] == station].sort_values("horizon")
-            first = g.iloc[0]
-            warn_any = bool(g["warning"].astype(bool).any())
-            name = str(STATIONS.set_index("site_no")["name"]
-                       .get(station, ""))[:44]
-            head = st.columns([3, 1, 1, 1, 1])
-            head[0].markdown(f"**{station}** — {name}")
-            head[1].markdown(verdict_badge(warn_any), unsafe_allow_html=True)
-            now_cls = (CLASS_NAMES[int(PS.classify(first["do_now_mgl"]))]
-                       if "do_now_mgl" in g.columns
-                       and pd.notna(first["do_now_mgl"]) else None)
-            if now_cls:
-                head[2].markdown(
-                    f"DO now **{first['do_now_mgl']:.2f}** mg/L<br>"
-                    + class_chip(now_cls), unsafe_allow_html=True)
-            else:
-                head[2].markdown("DO now —")
-            head[3].markdown(
-                f"<span style='font-size:12.5px'>data age "
-                f"<b>{first['data_age_hours']:.1f} h</b></span>",
-                unsafe_allow_html=True)
-            head[4].markdown(
-                chip(str(first["weather_source"]).replace("_", " "),
-                     BLUE if "era5" in str(first["weather_source"])
-                     else AMBER), unsafe_allow_html=True)
-            cols = st.columns(len(HORIZONS))
-            for col, r in zip(cols, g.itertuples()):
-                with col:
-                    tau = None if pd.isna(r.tau) else float(r.tau)
-                    st.markdown(
-                        f"<span style='font-size:12.5px'><b>{r.horizon} h</b>"
-                        f" → {pd.Timestamp(r.valid_at):%d %b %H:%M} UTC"
-                        f"</span>", unsafe_allow_html=True)
-                    st.markdown(big_number(f"{r.pred_do_mgl:.2f}", "mg/L"),
-                                unsafe_allow_html=True)
-                    st.markdown(decision_bar(r.p_low, tau),
-                                unsafe_allow_html=True)
-                    rel = ("at or above" if tau is not None
-                           and r.p_low >= tau else "below")
-                    st.markdown(
-                        f"<span style='font-size:12px'><b>{r.p_low:.1%}</b> "
-                        f"chance of Low — {rel} τ="
-                        f"{'—' if tau is None else format(tau, '.0%')}"
-                        f"</span>", unsafe_allow_html=True)
+        # The four groups, in the order an operator needs them. An early
+        # warning - safe water predicted to go Low - is the only thing on
+        # this page that cannot be read straight off the sensor, so it comes
+        # first and gets the most room. "Already Low" is true and useful but
+        # it is not news. A silent sensor is an outage, not a forecast.
+        groups = station_groups(df)
+        k_counts = st.columns(4)
+        k_counts[0].metric("⚠ Early warnings",
+                           f"{len(groups['early_warning'])}",
+                           "safe water → Low", delta_color="off")
+        k_counts[1].metric("Already Low",
+                           f"{len(groups['ongoing_low'])}",
+                           "the sensor already says so", delta_color="off")
+        k_counts[2].metric("No warning", f"{len(groups['none'])}",
+                           "forecast, rule did not fire", delta_color="off")
+        k_counts[3].metric("Sensor offline", f"{len(groups['stale'])}",
+                           f"reading older than {MAX_AGE_H:g} h",
+                           delta_color="off")
+
+        st.divider()
+        st.subheader(f"⚠ Early warnings — {len(groups['early_warning'])} "
+                     f"station(s)")
+        st.caption(
+            f"Water that is **not** Low now, which the system expects to "
+            f"drop below {LOW} mg/L. This is the thing the project exists "
+            f"for: everything else on this page an operator could read off "
+            f"the sensor. The bar is P(Low); the tick is the frozen "
+            f"threshold τ, so the comparison that *is* the decision is "
+            f"drawn rather than left as arithmetic.")
+        if not groups["early_warning"]:
+            st.success("No station with safe water now is predicted to go "
+                       "Low at any horizon.")
+        for station in groups["early_warning"]:
+            render_station(df, station, highlight=True)
+
+        if groups["ongoing_low"]:
             st.divider()
+            st.subheader(f"Already below {LOW} mg/L — "
+                         f"{len(groups['ongoing_low'])} station(s)")
+            st.caption("The rule fires here too, but the water is *already* "
+                       "Low: the sensor has said so since before the "
+                       "forecast was made. Kept separate so it cannot be "
+                       "mistaken for advance notice.")
+            for station in groups["ongoing_low"]:
+                render_station(df, station)
+
+        if groups["stale"]:
+            st.divider()
+            st.subheader(f"Sensor offline — {len(groups['stale'])} station(s)")
+            st.caption(
+                f"The newest DO reading is older than {MAX_AGE_H:g} h, so "
+                f"**no forecast was issued**. Every input the models read is "
+                f"a lag of the DO the sensor last sent, so a stale reading "
+                f"would produce a confident answer about a river nobody has "
+                f"looked at since — and it would look exactly like a fresh "
+                f"one. These stations can never raise a warning.")
+            # Rendered as rows, like every other group, so a reader scanning
+            # the page sees the same shape and cannot mistake an outage for
+            # a quiet river. `render_station` prints the outage instead of
+            # the horizon cards.
+            stale_order = sorted(
+                groups["stale"],
+                key=lambda s: -float(df.loc[df["station"] == s,
+                                            "data_age_hours"].max()))
+            for station in stale_order:
+                render_station(df, station)
+            with st.expander("Stale stations, as a table"):
+                stale_tbl = (df[df["station"].isin(groups["stale"])]
+                             .groupby("station")
+                             .agg(data_age_hours=("data_age_hours", "max"),
+                                  last_reading=("observed_at", "max"),
+                                  status=("status", "first"))
+                             .reset_index()
+                             .sort_values("data_age_hours", ascending=False)
+                             .merge(STATIONS[["site_no", "name", "state"]],
+                                    left_on="station", right_on="site_no",
+                                    how="left"))
+                st.dataframe(
+                    stale_tbl[["station", "name", "state", "data_age_hours",
+                               "last_reading", "status"]].rename(columns={
+                                   "data_age_hours": "data age (h)",
+                                   "last_reading": "last reading (UTC)"}
+                               ).style.format({"data age (h)": "{:.1f}"}),
+                    use_container_width=True, hide_index=True)
+
+        if groups["none"]:
+            st.divider()
+            with st.expander(f"No warning — {len(groups['none'])} station(s) "
+                             f"forecast, the rule did not fire",
+                             expanded=False):
+                st.caption("Highest chance of Low first, so the station "
+                           "closest to its threshold is at the top.")
+                for station in groups["none"]:
+                    render_station(df, station)
 
         with st.expander("The forecast file, as it was written"):
             # shortpath, not os.path.relpath: on Windows relpath raises when

@@ -148,9 +148,37 @@ deploy:
     # the schema of every forecast row, in this order
     columns: ["station", "issued_at", "horizon", "valid_at", "pred_do_mgl",
               "p_low", "tau", "warning", "model_version", "weather_source",
-              "data_age_hours"]
+              "data_age_hours", "status", "alert_type"]
     schedule: "hourly"
     batch_file: "run_live.bat"
+
+    # -----------------------------------------------------------------------
+    # The stale-data guard.
+    #
+    # Every input the models read is a lag or a rolling window of the DO the
+    # sensor last reported. Hand them a reading from days ago and they
+    # answer confidently about a river nobody has looked at since - and the
+    # answer looks exactly like a fresh one. Past this age a station gets a
+    # row saying so instead of a prediction, and it can never raise a
+    # warning.
+    #
+    # 6 hours: the shortest horizon is 6 h, so beyond this the "forecast"
+    # would be about an hour that has already passed.
+    # -----------------------------------------------------------------------
+    max_data_age_hours: 6
+    stale_status: "stale - sensor offline"
+    fresh_status: "ok"
+
+    # -----------------------------------------------------------------------
+    # What kind of alert a row is. "Already below 5 mg/L" and "about to drop
+    # below 5 mg/L" are different operational facts, and only the second is
+    # what this system exists for; a table that mixes them flatters it.
+    # -----------------------------------------------------------------------
+    alert_types:
+      early_warning: "early_warning"   # DO now Medium/Good, the rule fires
+      ongoing_low: "ongoing_low"       # DO now already Low, the rule fires
+      none: "none"                     # no warning
+      stale: "stale"                   # no prediction was made
 
   # -------------------------------------------------------------------------
   # Monitoring. Scores the logged forecasts once the real DO for their valid
