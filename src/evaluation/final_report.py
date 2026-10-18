@@ -36,6 +36,7 @@ RESULTS = project_path(FT["results_dir"])
 PLOTS = project_path(FT["plots_dir"])
 SEED = CFG["seed"]
 BEST = FT["best_single"]
+FINAL = CFG["final_system"]
 METHODS = ["persistence", "linear"] + MEMBERS + ["simple_average", "atae",
                                                  "stacking"]
 
@@ -624,6 +625,277 @@ def design_checks_section(reg, cls):
     return out
 
 
+# ---------------------------------------------------------------------------
+# STEP 12 - the deployed models on 2026.
+#
+# A real test, not an additional analysis: `models/final` had never been
+# scored, because 2025 was inside its training data, and the criteria below
+# were written into reports/plan_2026.md and committed before any 2026
+# dissolved-oxygen value was read. Every number here is read out of
+# results/live_2026/, which src/deploy/score_2026.py wrote.
+# ---------------------------------------------------------------------------
+def deploy_file(name):
+    """
+    One file from results/live_2026, or None if step 12 has not run.
+
+    Station ids are strings with leading zeros ("02110701"); pandas reads
+    them as integers and silently drops the zero, so they are forced to str.
+    """
+    from src.deploy import common as D
+    path = project_path(D.TEST26["results_dir"], name)
+    if not os.path.exists(path):
+        return None
+    head = pd.read_csv(path, nrows=0)
+    dtype = {c: str for c in ("station",) if c in head.columns}
+    return pd.read_csv(path, dtype=dtype or None)
+
+
+def deployed_2026_section():
+    """
+    The section the deployment step adds. Returns [] when step 12.3 has not
+    been run, so the report still renders on a checkout without it.
+    """
+    from src.deploy import common as D
+    reg = deploy_file("metrics_regression.csv")
+    cls = deploy_file("metrics_classification.csv")
+    if reg is None or cls is None:
+        return []
+    cmp_table = deploy_file("compare_2025_2026.csv")
+    per_station26 = deploy_file("per_station.csv")
+    lead26 = deploy_file("lead_times.csv")
+    skipped = deploy_file("skipped.csv")
+    penalty = None
+    ppath = project_path(D.TEST26["penalty_dir"], "penalty.csv")
+    if os.path.exists(ppath):
+        penalty = pd.read_csv(ppath)
+    walk = None
+    wpath = project_path(D.DEP["walk_forward"]["out_csv"])
+    if os.path.exists(wpath):
+        walk = pd.read_csv(wpath)
+    summary = {}
+    spath = project_path(D.TEST26["results_dir"], "summary.json")
+    if os.path.exists(spath):
+        with open(spath, encoding="utf-8") as f:
+            summary = json.load(f)
+
+    def r(h, col):
+        return get_r(reg, FINAL, h, col)
+
+    def c(h, col, rule="warn"):
+        return get_c(cls, FINAL, h, rule, col)
+
+    head = 24 if 24 in HORIZONS else HORIZONS[len(HORIZONS) // 2]
+    budget = FT["target_false_alarm_rate"]
+    out = ["\n## Deployed models on 2026 (pre-registered in plan_2026.md)\n"]
+
+    window = summary.get("window", [None, None])
+    n_scored = len(summary.get("stations_scored", [])) or \
+        (per_station26["station"].nunique() if per_station26 is not None else 0)
+    n_all = 30
+    try:
+        n_all = len(pd.read_csv(project_path(CFG["paths"]["stations"]),
+                                dtype={"site_no": str}))
+    except Exception:
+        pass
+
+    out.append(
+        f"`models/final` - the five members retrained on **2023+2024+2025** "
+        f"with the frozen settings, combined by the same stacking "
+        f"meta-model and thresholded by the same frozen warning rule - had "
+        f"never been scored: 2025 was inside its training data, so there "
+        f"was no year left to score it on. 2026 is that year. The test "
+        f"period, the stations, the metrics and the pass criteria were "
+        f"written into [`reports/plan_2026.md`](plan_2026.md) and committed "
+        f"**before any 2026 dissolved-oxygen value was read**; nothing was "
+        f"retuned, and the model version id "
+        f"`{summary.get('model_version', 'unknown')}` is the SHA-256 over "
+        f"the per-file hashes of the folder that produced these numbers.\n")
+    if window[0]:
+        out.append(
+            f"**Window** {str(window[0])[:16]} .. {str(window[1])[:16]} UTC "
+            f"(the last complete ERA5 day), "
+            f"**{summary.get('rows', 0):,} scored station-hours**, "
+            f"**{n_scored} of {n_all} stations**.\n")
+    out.append(
+        "> **One correction, recorded rather than hidden.** The first run of "
+        "this scoring was discarded. `clean.clean_station` had grown an "
+        "`index` argument so the deployment could clean a 2026 window with "
+        "the project's own code, but the weather and air tables were still "
+        "being put on the hard-coded 2023-2025 spine; the join then left "
+        "every weather and air feature NaN, and the models were being fed "
+        "water only. The giveaway was the live-data penalty coming out as "
+        "*exactly* zero at all four horizons - weather a model never reads "
+        "cannot change its answer. The bug is fixed, "
+        "`tests/test_deploy.py` now fails if it comes back (both as a unit "
+        "test on `clean_station` and as a check on the real 2026 table), "
+        "and the window, the stations, the models and the criteria below "
+        "are the ones `plan_2026.md` fixed in advance - none of them was "
+        "touched. The 2023-2025 cleaning is unaffected, because it takes "
+        "the default index.\n")
+
+    if cmp_table is not None and len(cmp_table):
+        at = cmp_table[cmp_table["horizon"] == head].set_index("metric")
+        far = float(at.loc["false_alarm_rate", "value_2026"])
+        out.append(
+            f"**Headline, {head} hours ahead.** R2 {fmt(r(head, 'r2'), 3)}, "
+            f"RMSE **{fmt(r(head, 'rmse'), 3)} mg/L** "
+            f"({r(head, 'skill_vs_persistence'):+.1%} against assuming no "
+            f"change), macro F1 {fmt(c(head, 'f1_macro'), 3)}, "
+            f"**{c(head, 'onset_recall'):.1%} of onsets caught** at a "
+            f"false-alarm rate of **{far:.2%}** against the {budget:.0%} the "
+            f"system promises.\n")
+
+    out.append(f"\n### 2026, all horizons\n")
+    headr = ["horizon", "rows", "R2", "RMSE", "skill vs no-change",
+             "macro F1", "Low recall", "onset recall", "false alarms"]
+    rows = []
+    for h in HORIZONS:
+        rows.append([f"{h} h",
+                     f"{int(r(h, 'n')):,}" if r(h, "n") == r(h, "n") else "-",
+                     fmt(r(h, "r2")), fmt(r(h, "rmse")),
+                     f"{r(h, 'skill_vs_persistence'):+.3f}",
+                     fmt(c(h, "f1_macro")), f"{c(h, 'recall_Low'):.3f}",
+                     f"{c(h, 'onset_recall'):.3f}",
+                     f"{c(h, 'false_alarm_rate'):.2%}"])
+    out.append(md_table(headr, rows))
+    out.append(f"\n*{pretty_method(FINAL)} with the frozen warning rule, on "
+               f"`models/final`. Persistence and every member are in "
+               f"`results/live_2026/metrics_*.csv`.*\n")
+
+    if cmp_table is not None and len(cmp_table):
+        out.append("\n### 2026 against the 2025 95% intervals\n")
+        out.append(
+            "The verdicts are the three words fixed in section 7.2 of the "
+            "plan: **holds** means the 2026 value is inside the 2025 "
+            "station-week interval or better than it, **degraded** means it "
+            "is outside in the worse direction, **improved** outside in the "
+            "better direction. The intervals are 1,000 station-week "
+            f"resamples of the 2025 predictions, computed before 2026 was "
+            f"read.\n")
+        head2 = ["horizon", "metric", "2025", "2025 95% CI", "2026",
+                 "change", "verdict"]
+        rows = []
+        for row in cmp_table.itertuples():
+            rows.append([f"{row.horizon} h", row.metric,
+                         fmt(row.value_2025), f"[{fmt(row.ci_lo_2025)}, "
+                         f"{fmt(row.ci_hi_2025)}]", fmt(row.value_2026),
+                         f"{row.change:+.4f}",
+                         ("**" + row.verdict + "**"
+                          if row.verdict == "degraded" else row.verdict)])
+        out.append(md_table(head2, rows))
+        word = summary.get("verdict", "")
+        why = summary.get("verdict_reason", "")
+        if word:
+            out.append(f"\n**Verdict against plan_2026.md: {word}.** {why}.\n")
+
+    if lead26 is not None and len(lead26):
+        w = lead26["warned"].astype(bool)
+        out.append("\n### Lead time on 2026\n")
+        out.append(md_table(["", "value"], [
+            ["low-DO events in 2026", f"{len(lead26)}"],
+            ["warned in advance",
+             f"{int(w.sum())} ({w.mean():.1%})"],
+            ["median lead time",
+             (f"{lead26.loc[w, 'lead_hours'].median():.0f} h"
+              if w.any() else "-")],
+            ["mean lead time",
+             (f"{lead26.loc[w, 'lead_hours'].mean():.1f} h"
+              if w.any() else "-")],
+            ["stations with at least one event",
+             f"{lead26['station'].nunique()}"]]))
+
+    if penalty is not None and len(penalty):
+        days = D.TEST26["penalty_days"]
+        out.append(f"\n### The live-data penalty\n")
+        out.append(
+            f"A deployed system cannot wait five days for ERA5. On the last "
+            f"**{days} days** of the window the same "
+            f"{int(penalty['rows'].max()):,} station-hours were scored "
+            f"twice: once on ERA5 archive weather and CAMS, and once on the "
+            f"Open-Meteo forecast API's recent past "
+            f"(`{D.FETCH['weather_model_recent']}`, the only forecast model "
+            f"that carries `soil_moisture_0_to_7cm`) with the CAMS forecast "
+            f"feed. The water data is identical in both, so the difference "
+            f"is the price of running live. A real live run has forecast "
+            f"weather only for roughly the last five hours-to-days of its "
+            f"window, so this is an **upper bound** on the penalty, not the "
+            f"everyday cost.\n")
+        head3 = ["horizon", "RMSE ERA5", "RMSE forecast", "RMSE diff",
+                 "onset ERA5", "onset forecast", "onset diff",
+                 "false alarms ERA5", "false alarms forecast"]
+        rows = []
+        for row in penalty.itertuples():
+            rows.append([f"{row.horizon} h", fmt(row.rmse_era5),
+                         fmt(row.rmse_forecast), f"{row.rmse_diff:+.4f}",
+                         f"{row.onset_era5:.3f}",
+                         f"{row.onset_forecast:.3f}",
+                         f"{row.onset_diff:+.3f}",
+                         f"{row.fa_era5:.2%}", f"{row.fa_forecast:.2%}"])
+        out.append(md_table(head3, rows))
+        out.append("\n*Forecast minus ERA5; a positive RMSE difference and a "
+                   "negative onset difference both mean the forecast feed "
+                   "is worse. Source: "
+                   "`results/live_2026/penalty/penalty.csv`.*\n")
+
+    if walk is not None and len(walk):
+        out.append("\n### Walk-forward: three test years\n")
+        out.append(
+            "The same frozen system, three expanding training windows. The "
+            "2024 row is **not a clean test**: 2024 is the year every "
+            "hyperparameter, the ensemble and the warning thresholds were "
+            "chosen on, so its numbers are an in-sample upper bound, and "
+            "they are the blocked cross-fitted out-of-fold ones from step 7. "
+            "No model was retrained for this table and nothing was retuned.\n")
+        head4 = ["train", "test", "horizon", "rows", "RMSE", "macro F1",
+                 "onset recall", "false alarms", "note"]
+        rows = []
+        for row in walk.itertuples():
+            if not row.available:
+                rows.append([row.train, row.test, f"{row.horizon} h"]
+                            + ["-"] * 5 + ["not scored"])
+                continue
+            rows.append([row.train, row.test, f"{row.horizon} h",
+                         f"{int(row.n):,}", fmt(row.rmse),
+                         fmt(row.f1_macro), f"{row.onset_recall:.3f}",
+                         f"{row.false_alarm_rate:.2%}", row.note])
+        out.append(md_table(head4, rows))
+
+    if per_station26 is not None and len(per_station26):
+        out.append(f"\n### Per station on 2026, {head} hours ahead\n")
+        out.append("Sorted by how many onsets each station actually had.\n")
+        out.append(md_table(
+            ["station", "rows", "RMSE", "macro F1", "onset recall",
+             "false alarms", "onsets"],
+            [[s.station, f"{int(s.rows):,}", fmt(s.rmse, 3),
+              fmt(s.f1_macro, 3), f"{s.onset_recall:.3f}",
+              f"{s.false_alarm_rate:.4f}", f"{int(s.n_onsets):,}"]
+             for s in per_station26.itertuples()]))
+
+    if skipped is not None and len(skipped):
+        out.append("\n### Stations not scored on 2026\n")
+        out.append(md_table(["station", "stage", "reason"],
+                            [[s.station, s.stage, s.reason]
+                             for s in skipped.itertuples()]))
+        out.append(f"\n*The plan said a station whose DO sensor did not "
+                   f"report in 2026 would be dropped and listed, and that "
+                   f"the comparison would be marked unreliable below 20 "
+                   f"stations. {n_scored} reported.*\n")
+    else:
+        out.append("\nEvery station reported usable 2026 data.\n")
+
+    out.append("\n*Sources: `results/live_2026/` (metrics, bootstrap, "
+               "per-station, lead times, skipped stations, "
+               "`compare_2025_2026.csv`, `walk_forward.csv`) and "
+               "`results/live_2026/penalty/`. Written by "
+               "`src/deploy/score_2026.py` and "
+               "`src/deploy/walk_forward.py`.*\n")
+    return out
+
+
+def pretty_method(name):
+    return str(name).replace("_", " ")
+
+
 def scope_section():
     out = ["\n## Scope and future work\n"]
     out.append("- **Evaluated at monitored stations.** That is the intended "
@@ -637,9 +909,19 @@ def scope_section():
                "quality. Applying the same pipeline to Indian rivers - the "
                "CPCB real-time stations, for example - is future work, and "
                "would need its own freeze and its own untouched test year.")
-    out.append("- **One test year.** 2025 was scored once, which is what "
-               "makes it honest, but one year is one draw. A further "
-               "untouched year would narrow every interval in this report.")
+    if deploy_file("metrics_regression.csv") is None:
+        out.append("- **One test year.** 2025 was scored once, which is "
+                   "what makes it honest, but one year is one draw. A "
+                   "further untouched year would narrow every interval in "
+                   "this report.")
+    else:
+        out.append("- **Two test years now, not one.** 2025 was scored once "
+                   "against `FROZEN.md`, and 2026 was then scored once "
+                   "against `plan_2026.md` with the deployed models (see "
+                   "**Deployed models on 2026**). Two draws are better than "
+                   "one and still not many; the walk-forward table is the "
+                   "honest summary of what is known, and the 2024 row in it "
+                   "is in-sample and marked as such.")
     out.append("- **Adaptive weighting (ATAE) is worth revisiting.** It was "
                "rejected on validation by a rule written in advance, and it "
                "then came out level with or just ahead of stacking on 2025 "
@@ -901,11 +1183,16 @@ def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
                "were scored on 2025.\n")
     out.append("A second set, in `models/final/`, was retrained afterwards "
                "on **2023 + 2024 + 2025** so the app can forecast using "
-               "every hour ever recorded. Those models are **untested and "
-               "untestable**: they have seen the test year, so there is no "
-               "data left to score them on, and any metric computed for "
-               "them would be meaningless. They are never used for a "
-               "reported result.\n")
+               "every hour ever recorded. At the time this report was first "
+               "written those models were **untested and untestable**: they "
+               "had seen the test year, so there was no data left to score "
+               "them on. None of the 2025 numbers above comes from them.\n")
+    if deploy_file("metrics_regression.csv") is not None:
+        out.append(
+            "**They have since been tested.** 2026 arrived, which is a year "
+            "`models/final` did not train on, and the criteria were "
+            "pre-registered before any 2026 value was read. See **Deployed "
+            "models on 2026** below; nothing in sections 1-9 changed.\n")
     san = os.path.join(RESULTS, "stage3_sanity.csv")
     if os.path.exists(san):
         d = pd.read_csv(san)
@@ -941,6 +1228,8 @@ def write(reg, cls, reg1, cls1, abl, lead, stations, boot, taus, plots):
 
     # ---- design choices and scope (step 10: additional analyses) ----
     out.extend(design_checks_section(reg, cls))
+    # ---- step 12: the deployed models, scored on 2026 ----
+    out.extend(deployed_2026_section())
     out.extend(scope_section())
 
     path = project_path("reports", "final_results.md")

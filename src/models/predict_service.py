@@ -73,6 +73,9 @@ class Forecaster:
         self.label = STAGE_LABEL[stage]
         self.features = C.feature_columns()
         self._cache = {}
+        # Inference batch size for the deep members. A single-row app request
+        # does not care; step 12 scores a whole year at once and raises it.
+        self.batch_size = CFG["deep_learning"]["batch_size"]
 
     # -- members -----------------------------------------------------------
     def _tabular(self, name, task, h, X):
@@ -129,8 +132,7 @@ class Forecaster:
                                  n_features=n_features).to(device)
             model.load_state_dict(ckpt["state_dict"])
             _, do_pred, proba = T.predict(model, rows, reg_t, cls_t, loss_fn,
-                                          device,
-                                          CFG["deep_learning"]["batch_size"],
+                                          device, self.batch_size,
                                           bundle["do_scale"])
             preds.append(do_pred)
             probs.append(proba)
@@ -165,6 +167,13 @@ class Forecaster:
                           the result reports honestly.
         """
         out = {}
+        # The deep members answer all four horizons in one forward pass, so
+        # they run once here rather than once per horizon below - four times
+        # less GPU work for exactly the same numbers.
+        deep = {}
+        if sequence_rows is not None:
+            for name in ("bilstm", "cnn_lstm"):
+                deep[name] = self._deep(name, sequence_rows)
         for h in HORIZONS:
             reg_parts, proba_parts, used = [], [], []
             for name in MEMBERS:
@@ -177,7 +186,7 @@ class Forecaster:
                 used.append(name)
             if sequence_rows is not None:
                 for name in ("bilstm", "cnn_lstm"):
-                    r, p = self._deep(name, sequence_rows)
+                    r, p = deep[name]
                     j = HORIZONS.index(h)
                     reg_parts.append(r[:, j])
                     proba_parts.append(p[:, j, :])
@@ -207,7 +216,12 @@ class Forecaster:
                       "warn": warn, "tau": tau, "method": method,
                       "members": used,
                       "member_reg": dict(zip(used, reg.T)),
-                      "member_p_low": dict(zip(used, proba[:, :, 0].T))}
+                      "member_p_low": dict(zip(used, proba[:, :, 0].T)),
+                      # the full (n, 3) probabilities per member, so a caller
+                      # that wants to score the members as well as the
+                      # ensemble does not have to run them again
+                      "member_proba": {m: proba[:, i, :]
+                                       for i, m in enumerate(used)}}
         return out
 
     # -- convenience: one station, one hour, from the processed test file ---
@@ -227,7 +241,8 @@ class Forecaster:
         res = self.predict_rows(row, seq)
         return {h: {k: (v[0] if isinstance(v, np.ndarray) else v)
                     for k, v in d.items()
-                    if k not in ("member_reg", "member_p_low")}
+                    if k not in ("member_reg", "member_p_low",
+                                                 "member_proba")}
                 | {"member_reg": {m: float(a[0]) for m, a in d["member_reg"].items()},
                    "member_p_low": {m: float(a[0]) for m, a in d["member_p_low"].items()}}
                 for h, d in res.items()}, row

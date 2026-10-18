@@ -136,8 +136,97 @@ python -m src.models.sanity_stage3       # stage-3 sanity check
 python -m src.evaluation.step10_checks   # design checks -> results/test/step10_*
 python -m src.evaluation.final_report    # re-render the report with them
 
+# Step 12 - deployment, and the 2026 test of the deployed models.
+# Settings live in config_deploy.yaml; config.yaml is never touched again.
+python -m src.deploy.fetch_live --mode history   # 2026 data, same sources
+python -m src.deploy.score_2026                  # -> results/live_2026/
+python -m src.deploy.fetch_live --mode penalty   # ERA5 vs the forecast API
+python -m src.deploy.score_2026 --penalty        # the live-data penalty
+python -m src.deploy.walk_forward                # 2024 / 2025 / 2026 table
+python -m src.deploy.model_card                  # -> models/final/MODEL_CARD.md
+python -m src.evaluation.final_report            # adds the 2026 section
+
 pytest -q                                # the whole test suite
 ```
+
+## Running it live
+
+The deployment is a layer on top of the frozen system. Every setting it
+needs - dates, paths, the schedule, the API, the drift limits, the
+promotion gate - is in [config_deploy.yaml](config_deploy.yaml), loaded
+alongside `config.yaml`. Nothing in `config.yaml`, `FROZEN.md`,
+`models/stage2/` or any 2025 result is changed by any of it, and nothing is
+retuned on new data.
+
+```bash
+python -m src.deploy.run         # fetch -> forecast every station -> csv + log
+python -m src.deploy.monitor     # score the forecasts the sensors caught up with
+python -m src.deploy.api         # GET /health /warnings /forecast/{station}
+python -m src.deploy.retrain --dry-run   # exercise the promotion gate
+```
+
+A run writes `results/live/forecast_<UTC timestamp>.csv` - one row per
+station and horizon, carrying the predicted DO, P(Low), the frozen
+threshold tau, the warning flag, the **model version id**, the **weather
+source** for that hour and how old the newest reading was - and appends the
+same rows to `results/live/log.parquet`. It prints which stations are
+under warning and which were skipped, with the reason. A station offline,
+an API down or a missing column costs that station and nothing else.
+
+### Scheduling it hourly on Windows
+
+[`run_live.bat`](run_live.bat) does one run and then updates the
+monitoring csv, logging both to `results\live\run_live.log`. Register it
+with Task Scheduler (one line, from an **Administrator** prompt, with the
+path to your checkout):
+
+```bat
+schtasks /create /tn "DO early warning" /tr "A:\ML_MAIN_V2\run_live.bat" ^
+         /sc hourly /mo 1 /st 00:05 /rl LIMITED
+```
+
+Then:
+
+```bat
+schtasks /run    /tn "DO early warning"      REM run it once now
+schtasks /query  /tn "DO early warning" /v   REM when it last ran, and its result
+schtasks /change /tn "DO early warning" /disable
+schtasks /delete /tn "DO early warning" /f
+```
+
+Or through the GUI: **Task Scheduler → Create Task**, Triggers → *Daily*,
+repeat task every *1 hour* for *1 day*; Actions → *Start a program*,
+Program `A:\ML_MAIN_V2\run_live.bat`, Start in `A:\ML_MAIN_V2`; General →
+*Run whether user is logged on or not*.
+
+The batch file prefers `.venv\Scripts\python.exe` and falls back to
+whatever `python` is on PATH. It does **not** pass `--allow-cpu`: if the
+CUDA build of torch is missing, the run stops and says so rather than
+quietly forecasting on the CPU.
+
+`GET /health` reports how many minutes ago the latest forecast was issued,
+so an hourly schedule that has stopped is visible from the API as well as
+from the app's **Live** tab.
+
+### Monitoring and retraining
+
+`python -m src.deploy.monitor` joins the logged forecasts to the DO that
+actually arrived and writes `results/live/monitor.csv` (rolling 30-day
+RMSE, macro F1, onset recall and false-alarm rate, per station and
+overall) plus `results/live/drift.csv`. Two things get flagged: **data
+drift**, a watched feature outside the range it had in training, and
+**performance drift**, a false-alarm rate above the 2% the system promises
+over the window.
+
+`python -m src.deploy.retrain` retrains every member and the stacking layer
+on all data up to a cut-off, with the frozen settings and round counts -
+nothing is tuned. It has a **promotion gate**: the candidate replaces
+`models/final` only if it is at least as good as the deployed models on the
+most recent two months it did not train on, on RMSE *and* on false-alarm
+rate, at *every* horizon. The old version moves to
+`models/archive/<version id>/` first, and that version id is the one in
+every forecast row it ever produced. `--dry-run` exercises the whole path,
+including a deliberately worse candidate, without training anything.
 
 ## The app
 
@@ -145,26 +234,58 @@ pytest -q                                # the whole test suite
 streamlit run app/app.py
 ```
 
-Five tabs: **Overview** (the problem and the headline numbers),
-**Predict** (pick a station and hour, or upload a window of hourly
-readings, and get a forecast plus a WARNING badge), **Monitor** (a station
-through a month of 2025 with the warning periods shaded), **Results** (the
-2025 tables, the onset/false-alarm trade-off, lead times, the ablation and
-the per-station breakdown) and **Method** (how it works, what was rejected, the
-design checks, and the scope).
+Six tabs: **Overview** (the problem and the headline numbers), **Predict**
+(pick a station and hour, or upload a window of hourly readings, and get a
+forecast plus a WARNING badge), **Monitor** (a station through a month of
+2025 with the warning periods shaded), **Live** (the deployed system right
+now: when it last ran, every station sorted by risk, P(Low) against tau,
+data age and weather source, the stations it skipped, and the monitoring
+numbers), **Results** (the 2025 tables, the onset/false-alarm trade-off,
+lead times, the ablation and the per-station breakdown) and **Method** (how
+it works, what was rejected, the design checks, and the scope).
 
 Two example inputs are in `app/sample_data/` - one window taken from just
 before a real low-oxygen event, one from healthy water. The app reads
 everything from `results/`, `reports/` and `models/`; no number in it is
-hard-coded.
+hard-coded, and the Live tab shows a clear empty state - with the commands
+to fix it - when there has been no run.
 
 ### Which models the app uses
 
-`models/final/` by default - the members retrained on **2023 + 2024 +
-2025**, so a live forecast uses every hour ever recorded. These models are
-deliberately **never scored**, because there is no year left to score them
-on; a toggle in the app switches to `models/stage2/`, which are the models
-the reported 2025 numbers actually come from.
+There are two sets, and the app does not let them be confused:
+
+- **`models/stage2/`** - the members trained on **2023 + 2024**. These are
+  the models the reported 2025 numbers come from, and a **2025 hour can
+  only be forecast with these**. Both 2025 modes print what the oxygen
+  actually did next to the forecast, and `models/final` trained on that
+  hour, so a comparison using it would not be a real one.
+- **`models/final/`** - the members retrained on **2023 + 2024 + 2025**,
+  which is what every live forecast and the 2026 test use. These are the
+  deployed models; see
+  [models/final/MODEL_CARD.md](models/final/MODEL_CARD.md).
+
+## Two test years
+
+| year | role |
+|---|---|
+| **2023** | training |
+| **2024** | every choice: hyperparameters, ensemble, thresholds |
+| **2025** | the test of the **method**, scored once against `FROZEN.md` |
+| **2026** | the test of the **deployed models**, scored once against [`reports/plan_2026.md`](reports/plan_2026.md) |
+
+`models/final/` could not be scored on 2025, because 2025 was inside its
+training data. 2026 is a year it did not train on, so it can be. The test
+period, the stations, the metrics and the pass criteria - including the
+2025 bootstrap intervals the result is judged against - were written into
+`reports/plan_2026.md` and **committed on their own, before any 2026
+dissolved-oxygen value was downloaded**. `git log` shows that order, and
+`tests/test_deploy.py` checks it.
+
+The result, the walk-forward table across all three years, and the
+live-data penalty are in
+[reports/final_results.md](reports/final_results.md) under **Deployed
+models on 2026**, with the raw numbers in `results/live_2026/`. It is
+reported as it came out.
 
 ## Project structure
 

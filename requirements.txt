@@ -50,5 +50,14 @@ shap==0.45.0
 streamlit==1.33.0
 plotly==5.22.0
 
+# --- deployment (step 12) ------------------------------------------
+# joblib ships with scikit-learn, but src/deploy uses it directly (the
+# parallel bootstrap and the per-station feature build), so it is pinned
+# here rather than left to arrive as somebody else's dependency.
+joblib==1.5.3
+fastapi==0.136.3           # src/deploy/api.py
+uvicorn==0.48.0            # the server that runs it
+httpx==0.28.1              # fastapi's TestClient, used by tests/test_deploy.py
+
 # --- tests ---------------------------------------------------------
 pytest==8.2.0

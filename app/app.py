@@ -376,6 +376,68 @@ def image_with_alt(path, alt, width=620):
         unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------------
+# The deployed system (step 12). Read-only: the app never runs a live
+# forecast, it shows the newest one that `python -m src.deploy.run` wrote.
+# Every path and limit comes from config_deploy.yaml.
+# ---------------------------------------------------------------------------
+from src.deploy import common as DEPLOY                     # noqa: E402
+
+LIVE_DIR = DEPLOY.RUN["results_dir"]
+LIVE_BATCH = DEPLOY.RUN["batch_file"]
+MONITOR_DAYS = DEPLOY.MON["window_days"]
+MONITOR_FA = DEPLOY.MON["max_false_alarm_rate"]
+
+
+@st.cache_data(show_spinner=False)
+def load_live_forecast():
+    """
+    (frame, path) for the newest forecast file, or None if there has never
+    been a run. Reusing the runner's own loader keeps the app and the csv
+    schema from drifting apart.
+    """
+    from src.deploy import run as RUNNER
+    df, path = RUNNER.load_latest()
+    if df is None:
+        return None
+    df["warning"] = df["warning"].astype(str).str.lower().isin(
+        ["true", "1", "yes"]) if df["warning"].dtype == object \
+        else df["warning"].astype(bool)
+    return df, path
+
+
+@st.cache_data(show_spinner=False)
+def load_monitor():
+    """(monitor.csv, drift.csv), either of which may be None."""
+    out = []
+    for key in ("out_csv", "drift_csv"):
+        p = project_path(DEPLOY.MON[key])
+        out.append(pd.read_csv(p, dtype={"station": str})
+                   if os.path.exists(p) else None)
+    return out[0], out[1]
+
+
+@st.cache_data(show_spinner=False)
+def load_live_skipped():
+    """
+    The stations the last live fetch skipped, with the reason. Resolved with
+    `project_path` rather than `dpath`, because `dpath` creates the folder it
+    points at and opening a tab should not write anything.
+    """
+    p = project_path(DEPLOY.DATA["skipped"].format(mode="live"))
+    if not os.path.exists(p):
+        return None
+    return pd.read_csv(p, dtype={"station": str})
+
+
+@st.cache_data(show_spinner=False)
+def load_model_card():
+    p = project_path(DEPLOY.DEP["models"]["model_card"])
+    return open(p, encoding="utf-8").read() if os.path.exists(p) else None
+
+
+MODEL_CARD = load_model_card()
+
 REG = load_csv("metrics_regression_stage2.csv")
 CLS = load_csv("metrics_classification_stage2.csv")
 ABL = load_csv("ablation.csv")
@@ -394,7 +456,8 @@ st.caption("Forecasting low-oxygen conditions 6 to 48 hours ahead, from "
            "water-quality sensors, weather and air quality. "
            "Tested once on 2025, against a system frozen beforehand.")
 
-tabs = st.tabs(["Overview", "Predict", "Monitor", "Results", "Method"])
+tabs = st.tabs(["Overview", "Predict", "Monitor", "Live",
+                "Results", "Method"])
 
 
 # ---------------------------------------------------------------------------
@@ -525,32 +588,37 @@ with tabs[1]:
     else:
         STAGE_NAME = {
             "stage2": "Tested models (trained 2023-24, scored on 2025)",
-            "final": "All-data models (2023-25, used for forecasting, "
-                     "not testable)"}
-        with st.expander("Advanced — which models to run",
-                         expanded=False):
-            # Default to the tested models. Both of the 2025 modes below
-            # print what the oxygen actually did next to the forecast, and
-            # only the tested models have never seen that hour, so that
-            # comparison is a real one. The all-data models are the right
-            # choice for a genuinely new window, which is what the upload
-            # mode is for.
-            default = "stage2" if "stage2" in stages else stages[0]
-            stage = st.radio("Model set", stages,
-                             index=stages.index(default),
-                             format_func=lambda s: STAGE_NAME.get(s, s))
-            st.caption(PS.STAGE_LABEL[stage])
-            if stage == "final":
-                st.warning("These models were trained on 2025 as well, so a "
-                           "forecast for a 2025 hour is not an out-of-sample "
-                           "one. Use them on new data, not to check the "
-                           "system against 2025.")
+            "final": "Deployed models (2023-25; for 2026 and live data)"}
 
         mode = st.radio("What to forecast",
                         ["A real 2025 low-oxygen event",
                          "Any station and hour in 2025",
                          "Upload a window of readings"],
                         horizontal=True)
+
+        # THE RULE (step 11, kept in step 12). A 2025 hour may only be
+        # forecast with the tested models: both 2025 modes print what the
+        # oxygen actually did next to the forecast, and models/final was
+        # trained on that hour, so the comparison would not be a real one.
+        # models/final is for 2026 and for live data - that is what the
+        # Live tab and the upload mode use.
+        on_2025 = not mode.startswith("Upload")
+        allowed = (["stage2"] if on_2025 and "stage2" in stages
+                   else list(stages))
+        default = ("stage2" if on_2025 and "stage2" in stages
+                   else ("final" if "final" in stages else stages[0]))
+        with st.expander("Advanced — which models to run", expanded=False):
+            stage = st.radio("Model set", allowed,
+                             index=allowed.index(default),
+                             format_func=lambda s: STAGE_NAME.get(s, s))
+            st.caption(PS.STAGE_LABEL[stage])
+            if on_2025 and "final" in stages:
+                st.info("A 2025 hour is forecast with the **tested** models "
+                        "only. The deployed models (`models/final`) were "
+                        "trained on 2025, so a 2025 forecast from them is "
+                        "not out of sample. They are used on 2026 and on "
+                        "live data — see the **Live** tab — and are "
+                        "available here for an uploaded window.")
 
         forecaster = get_forecaster(stage)
         result = None
@@ -653,7 +721,8 @@ with tabs[1]:
                         s.update(label="Done.", state="complete")
                     result = ({h: {k: (v[0] if isinstance(v, np.ndarray) else v)
                                    for k, v in d.items()
-                                   if k not in ("member_reg", "member_p_low")}
+                                   if k not in ("member_reg", "member_p_low",
+                                                 "member_proba")}
                                | {"member_reg": {m: float(a[0]) for m, a in
                                                  d["member_reg"].items()},
                                   "member_p_low": {m: float(a[0]) for m, a in
@@ -872,11 +941,244 @@ with tabs[2]:
 
 
 # ---------------------------------------------------------------------------
+# Live - the deployed system as it stands right now (step 12).
+#
+# Everything here is read from results/live/: the newest forecast file that
+# `python -m src.deploy.run` wrote, and the monitoring csvs. Nothing is
+# predicted in the app, so opening this tab cannot cost a GPU forecast, and
+# nothing is hard-coded - if there has been no run, the tab says so and
+# says how to make one.
+#
+# The models are models/final, which is the rule the Predict tab states:
+# 2025 hours use the tested stage-2 models, and models/final is for 2026
+# and for live data.
+# ---------------------------------------------------------------------------
+with tabs[3]:
+    st.header("Live")
+    live = load_live_forecast()
+    mon, drift = load_monitor()
+
+    if live is None:
+        st.info(
+            "**No live run yet.** The deployed system has not produced a "
+            "forecast on this machine, so there is nothing to show — this "
+            "tab deliberately shows an empty state rather than an old "
+            "number dressed up as a current one.")
+        st.markdown(f"""
+**To make one:**
+
+```bash
+python -m src.deploy.run          # fetch the live window, forecast, log it
+python -m src.deploy.monitor      # score the forecasts the sensors caught up with
+```
+
+or run `{LIVE_BATCH}` once, and schedule it hourly with Windows Task
+Scheduler:
+
+```bat
+schtasks /create /tn "DO early warning" /tr "%CD%\\{LIVE_BATCH}" ^
+         /sc hourly /mo 1 /st 00:05 /rl LIMITED
+```
+
+A run writes `{LIVE_DIR}/forecast_<UTC timestamp>.csv`, appends the same
+rows to `{LIVE_DIR}/log.parquet`, and this tab reads the newest file.
+        """)
+        if MODEL_CARD:
+            with st.expander("The deployed models (model card)"):
+                st.markdown(re.sub(r"(?m)^#", "##", MODEL_CARD))
+    else:
+        df, live_path = live
+        issued = pd.Timestamp(df["issued_at"].max())
+        now = pd.Timestamp.utcnow().tz_localize(None)
+        age_min = (now - issued).total_seconds() / 60.0
+        at_head = df[df["horizon"] == HEADLINE_H]
+        warned_stations = sorted(set(df.loc[df["warning"].astype(bool),
+                                            "station"]))
+
+        k = st.columns(5)
+        k[0].metric("Last run",
+                    f"{age_min / 60:.1f} h ago" if age_min >= 90
+                    else f"{age_min:.0f} min ago",
+                    f"{issued:%Y-%m-%d %H:%M} UTC", delta_color="off")
+        k[1].metric("Stations forecast", f"{df['station'].nunique()}",
+                    f"{len(HORIZONS)} horizons each", delta_color="off")
+        k[2].metric("Under warning now", f"{len(warned_stations)}",
+                    f"at any of {', '.join(str(h) for h in HORIZONS)} h",
+                    delta_color="off")
+        k[3].metric(f"Warned at {HEADLINE_H} h",
+                    f"{int(at_head['warning'].astype(bool).sum())}"
+                    f" of {len(at_head)}")
+        k[4].metric("Oldest reading",
+                    f"{df['data_age_hours'].max():.1f} h",
+                    "sensor lag", delta_color="off")
+
+        versions = sorted(set(df["model_version"].astype(str)))
+        sources = df["weather_source"].value_counts()
+        st.caption(
+            f"From `{os.path.basename(live_path)}` · models "
+            f"`{', '.join(versions)}` · weather "
+            + ", ".join(f"{v} rows {k2}" for k2, v in sources.items())
+            + (" · forecast-API hours are tagged, so a live forecast is "
+               "never mistaken for a reanalysis one"
+               if any("forecast" in s for s in sources.index) else ""))
+        if age_min > 90:
+            st.warning(f"The last run was {age_min / 60:.1f} hours ago. An "
+                       f"hourly schedule should keep this under an hour — "
+                       f"check the task and `{LIVE_DIR}/run_live.log`.")
+
+        st.subheader("Every station, worst first")
+        st.caption("Sorted by the highest chance of Low across the "
+                   "horizons. The bar is P(Low); the tick on it is the "
+                   "frozen warning threshold τ, so the comparison that *is* "
+                   "the decision is drawn rather than left as arithmetic.")
+        risk = (df.groupby("station")["p_low"].max()
+                .sort_values(ascending=False))
+        for station in risk.index:
+            g = df[df["station"] == station].sort_values("horizon")
+            first = g.iloc[0]
+            warn_any = bool(g["warning"].astype(bool).any())
+            name = str(STATIONS.set_index("site_no")["name"]
+                       .get(station, ""))[:44]
+            head = st.columns([3, 1, 1, 1, 1])
+            head[0].markdown(f"**{station}** — {name}")
+            head[1].markdown(verdict_badge(warn_any), unsafe_allow_html=True)
+            now_cls = (CLASS_NAMES[int(PS.classify(first["do_now_mgl"]))]
+                       if "do_now_mgl" in g.columns
+                       and pd.notna(first["do_now_mgl"]) else None)
+            if now_cls:
+                head[2].markdown(
+                    f"DO now **{first['do_now_mgl']:.2f}** mg/L<br>"
+                    + class_chip(now_cls), unsafe_allow_html=True)
+            else:
+                head[2].markdown("DO now —")
+            head[3].markdown(
+                f"<span style='font-size:12.5px'>data age "
+                f"<b>{first['data_age_hours']:.1f} h</b></span>",
+                unsafe_allow_html=True)
+            head[4].markdown(
+                chip(str(first["weather_source"]).replace("_", " "),
+                     BLUE if "era5" in str(first["weather_source"])
+                     else AMBER), unsafe_allow_html=True)
+            cols = st.columns(len(HORIZONS))
+            for col, r in zip(cols, g.itertuples()):
+                with col:
+                    tau = None if pd.isna(r.tau) else float(r.tau)
+                    st.markdown(
+                        f"<span style='font-size:12.5px'><b>{r.horizon} h</b>"
+                        f" → {pd.Timestamp(r.valid_at):%d %b %H:%M} UTC"
+                        f"</span>", unsafe_allow_html=True)
+                    st.markdown(big_number(f"{r.pred_do_mgl:.2f}", "mg/L"),
+                                unsafe_allow_html=True)
+                    st.markdown(decision_bar(r.p_low, tau),
+                                unsafe_allow_html=True)
+                    rel = ("at or above" if tau is not None
+                           and r.p_low >= tau else "below")
+                    st.markdown(
+                        f"<span style='font-size:12px'><b>{r.p_low:.1%}</b> "
+                        f"chance of Low — {rel} τ="
+                        f"{'—' if tau is None else format(tau, '.0%')}"
+                        f"</span>", unsafe_allow_html=True)
+            st.divider()
+
+        with st.expander("The forecast file, as it was written"):
+            # shortpath, not os.path.relpath: on Windows relpath raises when
+            # the forecast folder is on another drive, and a caption must
+            # never be able to take the tab down.
+            st.caption(f"`{DEPLOY.shortpath(live_path)}` — "
+                       f"the schema every row carries, including the model "
+                       f"version id and the weather source.")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+        skipped = load_live_skipped()
+        st.subheader("Stations skipped")
+        if skipped is None or not len(skipped):
+            st.success("No station was skipped on the last run.")
+        else:
+            st.warning(f"{len(skipped)} skipped. A station offline, an API "
+                       f"down or a missing column never stops a run — it is "
+                       f"logged and the other stations carry on.")
+            st.dataframe(skipped, use_container_width=True, hide_index=True)
+
+        st.subheader("Monitoring")
+        if mon is None or not len(mon):
+            st.info("Nothing scored yet. A forecast can only be scored once "
+                    "the hour it was about has arrived and the sensor has "
+                    "reported it — run `python -m src.deploy.monitor` after "
+                    "a few hours of forecasts.")
+        else:
+            overall = mon[(mon["station"] == "ALL")
+                          & (mon["window"] != "all_time")]
+            if len(overall):
+                st.caption(f"Rolling {MONITOR_DAYS}-day window, all "
+                           f"stations, scored against the DO that actually "
+                           f"turned up. A false-alarm rate above "
+                           f"{MONITOR_FA:.0%} over the window is flagged as "
+                           f"performance drift.")
+                show = overall[["horizon", "n", "rmse", "f1_macro",
+                                "onset_recall", "false_alarm_rate",
+                                "n_onsets", "flag_performance_drift"]]
+                st.dataframe(
+                    show.rename(columns={
+                        "n": "rows", "rmse": "RMSE",
+                        "f1_macro": "macro F1",
+                        "onset_recall": "onset recall",
+                        "false_alarm_rate": "false alarms",
+                        "n_onsets": "onsets",
+                        "flag_performance_drift": "drift?"}).style.format(
+                            {"RMSE": "{:.3f}", "macro F1": "{:.3f}",
+                             "onset recall": "{:.3f}",
+                             "false alarms": "{:.2%}"}, na_rep="—"),
+                    use_container_width=True, hide_index=True)
+                flagged = overall[overall["flag_performance_drift"]
+                                  .astype(bool)]
+                if len(flagged):
+                    st.error(
+                        "**Performance drift.** The false-alarm rate is "
+                        "above the promise at "
+                        + ", ".join(f"{int(h)} h" for h
+                                    in flagged["horizon"])
+                        + ". Retraining is gated: a candidate only replaces "
+                          "`models/final` if it is at least as good on the "
+                          "most recent months it did not train on "
+                          "(`python -m src.deploy.retrain --dry-run`).")
+                else:
+                    st.success("No performance drift: the false-alarm rate "
+                               "is inside the promise at every horizon "
+                               "scored so far.")
+            per = mon[(mon["station"] != "ALL")
+                      & (mon["window"] != "all_time")]
+            if len(per):
+                with st.expander("Per station"):
+                    st.dataframe(per, use_container_width=True,
+                                 hide_index=True)
+        if drift is not None and len(drift):
+            st.markdown("**Data drift** — features outside the range they "
+                        "had in training.")
+            bad = drift[drift["flag_data_drift"].astype(bool)]
+            if len(bad):
+                st.error("Out of range: "
+                         + ", ".join(f"{r.feature} "
+                                     f"({r.share_out_of_range:.1%} of rows, "
+                                     f"worst {r.worst_station})"
+                                     for r in bad.itertuples()))
+            else:
+                st.success("Every watched feature is inside its training "
+                           "range.")
+            with st.expander("Every watched feature"):
+                st.dataframe(drift, use_container_width=True,
+                             hide_index=True)
+
+        if MODEL_CARD:
+            with st.expander("The deployed models (model card)"):
+                st.markdown(re.sub(r"(?m)^#", "##", MODEL_CARD))
+
+
+# ---------------------------------------------------------------------------
 # Results - the full comparison, for someone looking for the hole in it.
 # Every method stays in every table; the deployed one is marked, not
 # promoted.
 # ---------------------------------------------------------------------------
-with tabs[3]:
+with tabs[4]:
     st.header("Results on the 2025 test year")
     if REG is None:
         st.warning("Run `python -m src.evaluation.test_2025` first.")
@@ -1019,7 +1321,7 @@ with tabs[3]:
 # ---------------------------------------------------------------------------
 # Method - how it works and what was checked, navigable rather than a wall
 # ---------------------------------------------------------------------------
-with tabs[4]:
+with tabs[5]:
     st.header("How it works")
     c1, c2, c3 = st.columns(3)
     with c1:

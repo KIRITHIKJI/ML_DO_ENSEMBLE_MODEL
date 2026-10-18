@@ -47,3 +47,25 @@ results/val/archive/predictions_*/
 results/val/oof/*.parquet
 # Per-row 2025 test predictions (regenerable by src/evaluation/test_2025.py).
 results/test/pred_*.parquet
+
+# ── step 12: the deployed system ─────────────────────────────────────
+# Live and 2026 data: downloaded, and re-created by
+# `python -m src.deploy.fetch_live`. Never mixed with data/raw.
+data/live/
+# Per-row 2026 predictions (~90 MB), regenerable by
+# src/deploy/score_2026.py. The metrics, intervals, per-station table,
+# lead times, verdicts and walk-forward csvs beside them ARE kept.
+results/live_2026/pred_*.parquet
+# Runtime output of production runs: one csv per hour, the append-only log
+# and the monitoring csvs. These belong to the machine that ran them, not
+# to the repository.
+results/live/
+# Retrain candidates and archived model versions are weights.
+models/candidate/
+models/archive/
+
+# The model card IS documentation and belongs in git, even though
+# everything else under models/ is a weight file.
+!models/final/
+models/final/*
+!models/final/MODEL_CARD.md

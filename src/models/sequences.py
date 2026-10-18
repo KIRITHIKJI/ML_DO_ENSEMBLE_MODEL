@@ -173,7 +173,8 @@ def engineered_feature_columns():
 
 
 def prepare(split, scaler=None, medians=None, stations=None, seq_len=None,
-            with_features=False, feature_scaler=None, feature_medians=None):
+            with_features=False, feature_scaler=None, feature_medians=None,
+            rows=None, panel=None):
     """
     Build the sequence data for one split.
 
@@ -188,16 +189,27 @@ def prepare(split, scaler=None, medians=None, stations=None, seq_len=None,
     before t, so they carry no future information. Their NaNs are filled
     with the TRAIN median and they are scaled by a StandardScaler fitted on
     TRAIN - a second scaler, separate from the one for the sequence.
+
+    `rows` and `panel` let a caller hand in tables it already has in memory
+    instead of naming a split in config.yaml. Step 12 uses this to build
+    sequences for the 2026 and live windows through exactly this function,
+    so the deep members' inputs are assembled the same way in deployment as
+    in training. `split` is ignored when both are given.
     """
     seq_len = SEQ_LEN if seq_len is None else int(seq_len)
     feature_cols = engineered_feature_columns() if with_features else []
-    panel = pd.read_parquet(project_path(P["hourly"]))
-    rows = pd.read_parquet(project_path(P[split]),
-                           columns=["station", "time", "station_id", DO]
-                                   + [f"y_{k}_{h}" for h in HORIZONS
-                                      for k in ["reg", "cls"]]
-                                   + [c for c in feature_cols
-                                      if c not in ("station_id", DO)])
+    needed = (["station", "time", "station_id", DO]
+              + [f"y_{k}_{h}" for h in HORIZONS for k in ["reg", "cls"]]
+              + [c for c in feature_cols if c not in ("station_id", DO)])
+    if panel is None:
+        panel = pd.read_parquet(project_path(P["hourly"]))
+    if rows is None:
+        rows = pd.read_parquet(project_path(P[split]), columns=needed)
+    else:
+        rows = rows[needed].copy()
+        # a station that was dropped while building features has no row and
+        # therefore no station code, so it must not stay in the panel either
+        panel = panel[panel["station"].isin(set(rows["station"]))]
     if stations is not None:                     # --quick mode
         rows = rows[rows["station"].isin(stations)]
         panel = panel[panel["station"].isin(stations)]

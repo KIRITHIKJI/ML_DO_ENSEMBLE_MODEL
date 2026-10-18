@@ -191,7 +191,9 @@ The headline numbers use members retrained on 2023+2024 (stage 2). The same chai
 
 **Every number in this report comes from the stage-2 models, trained on 2023+2024.** Those are the ones that were scored on 2025.
 
-A second set, in `models/final/`, was retrained afterwards on **2023 + 2024 + 2025** so the app can forecast using every hour ever recorded. Those models are **untested and untestable**: they have seen the test year, so there is no data left to score them on, and any metric computed for them would be meaningless. They are never used for a reported result.
+A second set, in `models/final/`, was retrained afterwards on **2023 + 2024 + 2025** so the app can forecast using every hour ever recorded. At the time this report was first written those models were **untested and untestable**: they had seen the test year, so there was no data left to score them on. None of the 2025 numbers above comes from them.
+
+**They have since been tested.** 2026 arrived, which is a year `models/final` did not train on, and the criteria were pre-registered before any 2026 value was read. See **Deployed models on 2026** below; nothing in sections 1-9 changed.
 
 They were checked only for sanity: every file loads and predicts without error, and their 2025 predictions still agree closely with the stage-2 models'. Across 40 model-task-horizon comparisons the correlation runs from **0.9790 to 0.9998** (median 0.9923), with a median absolute difference of 0.0400 and a worst of 0.2226. Nothing fell below the 0.95 correlation threshold, so nothing is flagged. A small difference is expected and healthy: stage 3 saw 2025 during training and stage 2 did not.
 
@@ -286,9 +288,149 @@ Across seeds 42-44 the single-model spread at 24 h is bilstm RMSE +-0.0023, macr
 *Seed-to-seed spread of one deep model at 24 h, from `models/dl/*_seed_spread.csv` - measured on the 2024 validation year, the only year on which repeated runs were scored. The frozen system averages all three seeds, so the wobble inside the deployed ensemble is smaller than this. Sources: `results/test/step10_seed_spread.csv`, `results/test/step10_method_gaps.csv`.*
 
 
+## Deployed models on 2026 (pre-registered in plan_2026.md)
+
+`models/final` - the five members retrained on **2023+2024+2025** with the frozen settings, combined by the same stacking meta-model and thresholded by the same frozen warning rule - had never been scored: 2025 was inside its training data, so there was no year left to score it on. 2026 is that year. The test period, the stations, the metrics and the pass criteria were written into [`reports/plan_2026.md`](plan_2026.md) and committed **before any 2026 dissolved-oxygen value was read**; nothing was retuned, and the model version id `final-35ab6d1d27d1` is the SHA-256 over the per-file hashes of the folder that produced these numbers.
+
+**Window** 2026-01-01 00:00 .. 2026-10-13 23:00 UTC (the last complete ERA5 day), **181,203 scored station-hours**, **28 of 30 stations**.
+
+> **One correction, recorded rather than hidden.** The first run of this scoring was discarded. `clean.clean_station` had grown an `index` argument so the deployment could clean a 2026 window with the project's own code, but the weather and air tables were still being put on the hard-coded 2023-2025 spine; the join then left every weather and air feature NaN, and the models were being fed water only. The giveaway was the live-data penalty coming out as *exactly* zero at all four horizons - weather a model never reads cannot change its answer. The bug is fixed, `tests/test_deploy.py` now fails if it comes back (both as a unit test on `clean_station` and as a check on the real 2026 table), and the window, the stations, the models and the criteria below are the ones `plan_2026.md` fixed in advance - none of them was touched. The 2023-2025 cleaning is unaffected, because it takes the default index.
+
+**Headline, 24 hours ahead.** R2 0.936, RMSE **0.738 mg/L** (+15.1% against assuming no change), macro F1 0.872, **47.9% of onsets caught** at a false-alarm rate of **1.65%** against the 2% the system promises.
+
+
+### 2026, all horizons
+
+| horizon | rows | R2 | RMSE | skill vs no-change | macro F1 | Low recall | onset recall | false alarms |
+|---|---|---|---|---|---|---|---|---|
+| 6 h | 180,545 | 0.9554 | 0.6172 | +0.650 | 0.8924 | 0.939 | 0.884 | 1.86% |
+| 12 h | 180,250 | 0.9449 | 0.6863 | +0.656 | 0.8836 | 0.936 | 0.878 | 2.02% |
+| 24 h | 179,811 | 0.9361 | 0.7383 | +0.151 | 0.8723 | 0.922 | 0.479 | 1.65% |
+| 48 h | 179,039 | 0.9046 | 0.9010 | +0.199 | 0.8374 | 0.884 | 0.490 | 1.75% |
+
+*stacking with the frozen warning rule, on `models/final`. Persistence and every member are in `results/live_2026/metrics_*.csv`.*
+
+
+### 2026 against the 2025 95% intervals
+
+The verdicts are the three words fixed in section 7.2 of the plan: **holds** means the 2026 value is inside the 2025 station-week interval or better than it, **degraded** means it is outside in the worse direction, **improved** outside in the better direction. The intervals are 1,000 station-week resamples of the 2025 predictions, computed before 2026 was read.
+
+| horizon | metric | 2025 | 2025 95% CI | 2026 | change | verdict |
+|---|---|---|---|---|---|---|
+| 6 h | rmse | 0.5146 | [0.4908, 0.5378] | 0.6172 | +0.1026 | **degraded** |
+| 6 h | f1_macro | 0.9050 | [0.8998, 0.9103] | 0.8924 | -0.0126 | **degraded** |
+| 6 h | onset_recall | 0.8608 | [0.8424, 0.8782] | 0.8842 | +0.0233 | improved |
+| 6 h | false_alarm_rate | 0.0175 | [0.0155, 0.0198] | 0.0186 | +0.0011 | holds |
+| 12 h | rmse | 0.5885 | [0.5602, 0.6156] | 0.6863 | +0.0979 | **degraded** |
+| 12 h | f1_macro | 0.8970 | [0.8911, 0.9034] | 0.8836 | -0.0134 | **degraded** |
+| 12 h | onset_recall | 0.8603 | [0.8395, 0.8791] | 0.8783 | +0.0179 | holds |
+| 12 h | false_alarm_rate | 0.0173 | [0.0153, 0.0194] | 0.0202 | +0.0029 | **degraded** |
+| 24 h | rmse | 0.6719 | [0.6407, 0.7011] | 0.7383 | +0.0665 | **degraded** |
+| 24 h | f1_macro | 0.8858 | [0.8794, 0.8922] | 0.8723 | -0.0134 | **degraded** |
+| 24 h | onset_recall | 0.4960 | [0.4626, 0.5310] | 0.4794 | -0.0166 | holds |
+| 24 h | false_alarm_rate | 0.0151 | [0.0132, 0.0171] | 0.0165 | +0.0015 | holds |
+| 48 h | rmse | 0.8534 | [0.8188, 0.8848] | 0.9010 | +0.0475 | **degraded** |
+| 48 h | f1_macro | 0.8561 | [0.8480, 0.8645] | 0.8374 | -0.0187 | **degraded** |
+| 48 h | onset_recall | 0.4852 | [0.4473, 0.5235] | 0.4897 | +0.0045 | holds |
+| 48 h | false_alarm_rate | 0.0133 | [0.0113, 0.0153] | 0.0175 | +0.0042 | **degraded** |
+
+**Verdict against plan_2026.md: PARTIAL.** the 2% false-alarm promise holds (1.65% at 24 h), but rmse at 24 h falls outside the 2025 interval.
+
+
+### Lead time on 2026
+
+|  | value |
+|---|---|
+| low-DO events in 2026 | 204 |
+| warned in advance | 106 (52.0%) |
+| median lead time | 18 h |
+| mean lead time | 14.3 h |
+| stations with at least one event | 26 |
+
+### The live-data penalty
+
+A deployed system cannot wait five days for ERA5. On the last **30 days** of the window the same 18,673 station-hours were scored twice: once on ERA5 archive weather and CAMS, and once on the Open-Meteo forecast API's recent past (`ecmwf_ifs025`, the only forecast model that carries `soil_moisture_0_to_7cm`) with the CAMS forecast feed. The water data is identical in both, so the difference is the price of running live. A real live run has forecast weather only for roughly the last five hours-to-days of its window, so this is an **upper bound** on the penalty, not the everyday cost.
+
+| horizon | RMSE ERA5 | RMSE forecast | RMSE diff | onset ERA5 | onset forecast | onset diff | false alarms ERA5 | false alarms forecast |
+|---|---|---|---|---|---|---|---|---|
+| 6 h | 0.5427 | 0.5408 | -0.0020 | 0.899 | 0.903 | +0.003 | 2.32% | 2.31% |
+| 12 h | 0.5820 | 0.5809 | -0.0011 | 0.864 | 0.866 | +0.002 | 2.56% | 2.61% |
+| 24 h | 0.6261 | 0.6248 | -0.0012 | 0.412 | 0.412 | +0.000 | 1.97% | 2.00% |
+| 48 h | 0.7864 | 0.7853 | -0.0012 | 0.494 | 0.500 | +0.006 | 1.76% | 1.71% |
+
+*Forecast minus ERA5; a positive RMSE difference and a negative onset difference both mean the forecast feed is worse. Source: `results/live_2026/penalty/penalty.csv`.*
+
+
+### Walk-forward: three test years
+
+The same frozen system, three expanding training windows. The 2024 row is **not a clean test**: 2024 is the year every hyperparameter, the ensemble and the warning thresholds were chosen on, so its numbers are an in-sample upper bound, and they are the blocked cross-fitted out-of-fold ones from step 7. No model was retrained for this table and nothing was retuned.
+
+| train | test | horizon | rows | RMSE | macro F1 | onset recall | false alarms | note |
+|---|---|---|---|---|---|---|---|---|
+| 2023 | 2024 | 6 h | 252,598 | 0.5216 | 0.8931 | 0.904 | 2.48% | not clean: 2024 was the tuning year |
+| 2023 | 2024 | 12 h | 252,259 | 0.5806 | 0.8850 | 0.891 | 2.49% | not clean: 2024 was the tuning year |
+| 2023 | 2024 | 24 h | 251,715 | 0.6509 | 0.8761 | 0.594 | 2.40% | not clean: 2024 was the tuning year |
+| 2023 | 2024 | 48 h | 250,736 | 0.8532 | 0.8407 | 0.555 | 2.46% | not clean: 2024 was the tuning year |
+| 2023-2024 | 2025 | 6 h | 252,900 | 0.5144 | 0.9052 | 0.861 | 1.75% | the frozen result |
+| 2023-2024 | 2025 | 12 h | 252,447 | 0.5882 | 0.8972 | 0.861 | 1.73% | the frozen result |
+| 2023-2024 | 2025 | 24 h | 251,671 | 0.6718 | 0.8860 | 0.496 | 1.50% | the frozen result |
+| 2023-2024 | 2025 | 48 h | 250,317 | 0.8535 | 0.8562 | 0.485 | 1.33% | the frozen result |
+| 2023-2025 | 2026 | 6 h | 180,545 | 0.6172 | 0.8924 | 0.884 | 1.86% | deployed models, pre-registered |
+| 2023-2025 | 2026 | 12 h | 180,250 | 0.6863 | 0.8836 | 0.878 | 2.02% | deployed models, pre-registered |
+| 2023-2025 | 2026 | 24 h | 179,811 | 0.7383 | 0.8723 | 0.479 | 1.65% | deployed models, pre-registered |
+| 2023-2025 | 2026 | 48 h | 179,039 | 0.9010 | 0.8374 | 0.490 | 1.75% | deployed models, pre-registered |
+
+### Per station on 2026, 24 hours ahead
+
+Sorted by how many onsets each station actually had.
+
+| station | rows | RMSE | macro F1 | onset recall | false alarms | onsets |
+|---|---|---|---|---|---|---|
+| 08048000 | 6,267 | 1.718 | 0.646 | 0.202 | 0.0429 | 580 |
+| 02110701 | 6,436 | 1.040 | 0.765 | 0.600 | 0.0947 | 380 |
+| 02198955 | 6,855 | 0.441 | 0.889 | 0.797 | 0.0496 | 350 |
+| 02198920 | 6,838 | 0.443 | 0.903 | 0.883 | 0.0328 | 333 |
+| 02198950 | 6,864 | 0.439 | 0.898 | 0.809 | 0.0323 | 330 |
+| 03430200 | 6,864 | 1.279 | 0.627 | 0.084 | 0.0101 | 262 |
+| 02110550 | 6,707 | 0.324 | 0.882 | 0.645 | 0.0810 | 248 |
+| 02264051 | 6,363 | 0.670 | 0.781 | 0.300 | 0.0130 | 213 |
+| 02322700 | 6,864 | 0.289 | 0.863 | 0.686 | 0.0446 | 204 |
+| 02110500 | 6,435 | 0.478 | 0.879 | 0.438 | 0.0373 | 201 |
+| 02239501 | 6,571 | 0.535 | 0.827 | 0.423 | 0.0419 | 189 |
+| 02110704 | 6,277 | 0.253 | 0.911 | 0.567 | 0.0507 | 178 |
+| 01484080 | 6,800 | 0.556 | 0.886 | 0.797 | 0.0244 | 153 |
+| 07239450 | 6,229 | 1.280 | 0.847 | 0.214 | 0.0042 | 145 |
+| 01302020 | 6,779 | 0.664 | 0.835 | 0.275 | 0.0029 | 138 |
+| 07049000 | 6,771 | 0.912 | 0.817 | 0.169 | 0.0030 | 118 |
+| 03612600 | 6,851 | 0.270 | 0.749 | 0.055 | 0.0042 | 109 |
+| 03353415 | 5,272 | 0.958 | 0.777 | 0.511 | 0.0150 | 94 |
+| 05474500 | 4,574 | 0.459 | 0.843 | 0.224 | 0.0058 | 85 |
+| 03290500 | 6,756 | 0.840 | 0.789 | 0.148 | 0.0024 | 81 |
+| 11273400 | 6,475 | 0.442 | 0.910 | 0.364 | 0.0034 | 33 |
+| 03431083 | 6,746 | 0.854 | 0.628 | 0.053 | 0.0026 | 19 |
+| 07048600 | 4,986 | 0.528 | 0.750 | 0.158 | 0.0029 | 19 |
+| 040851385 | 6,750 | 0.541 | 0.553 | 0.000 | 0.0034 | 18 |
+| 03353200 | 6,292 | 0.827 | 0.692 | 0.000 | 0.0005 | 9 |
+| 02135000 | 6,853 | 0.248 | 0.762 | 0.600 | 0.0004 | 5 |
+| 02198840 | 6,864 | 0.207 | 0.677 | 0.333 | 0.0001 | 3 |
+| 01484525 | 6,864 | 0.791 | 0.431 | nan | 0.0000 | 0 |
+
+### Stations not scored on 2026
+
+| station | stage | reason |
+|---|---|---|
+| 02292900 | fetch | the DO sensor reported nothing in the window |
+| 02276998 | fetch | the DO sensor reported nothing in the window |
+
+*The plan said a station whose DO sensor did not report in 2026 would be dropped and listed, and that the comparison would be marked unreliable below 20 stations. 28 reported.*
+
+
+*Sources: `results/live_2026/` (metrics, bootstrap, per-station, lead times, skipped stations, `compare_2025_2026.csv`, `walk_forward.csv`) and `results/live_2026/penalty/`. Written by `src/deploy/score_2026.py` and `src/deploy/walk_forward.py`.*
+
+
 ## Scope and future work
 
 - **Evaluated at monitored stations.** That is the intended use: a warning for a river where a sensor already sits, turning a reading into a forecast. Every station in the 2025 test also appears in training, so nothing here measures transfer to a river the system has never seen - testing on unseen stations is future work.
 - **US rivers, USGS gauges.** Water data comes from USGS instantaneous values, with ERA5 weather and CAMS air quality. Applying the same pipeline to Indian rivers - the CPCB real-time stations, for example - is future work, and would need its own freeze and its own untouched test year.
-- **One test year.** 2025 was scored once, which is what makes it honest, but one year is one draw. A further untouched year would narrow every interval in this report.
+- **Two test years now, not one.** 2025 was scored once against `FROZEN.md`, and 2026 was then scored once against `plan_2026.md` with the deployed models (see **Deployed models on 2026**). Two draws are better than one and still not many; the walk-forward table is the honest summary of what is known, and the 2024 row in it is in-sample and marked as such.
 - **Adaptive weighting (ATAE) is worth revisiting.** It was rejected on validation by a rule written in advance, and it then came out level with or just ahead of stacking on 2025 (sections 1 and 2a). That is a promising hint, not evidence: the comparison happened after the test year was opened, so it cannot be used to change the deployed system. Only a new, unseen year can settle it.

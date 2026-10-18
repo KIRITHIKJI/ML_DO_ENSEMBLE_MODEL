@@ -292,9 +292,15 @@ def test_the_report_labels_the_new_work_as_analysis_only(report):
 
 def test_the_scope_section_says_what_is_future_work(report):
     sec = report.split("## Scope and future work")[1]
-    for needed in ["monitored stations", "USGS", "CPCB", "One test year",
-                   "ATAE"]:
+    for needed in ["monitored stations", "USGS", "CPCB", "ATAE"]:
         assert needed in sec, f"the scope section lost {needed}"
+    # How many test years there are is a fact about the project, and it
+    # changed: step 12 scored the deployed models on 2026 against a
+    # pre-registered plan. The scope section must still say how many
+    # untouched years the conclusions rest on - either wording is correct,
+    # depending on whether step 12 has been run on this checkout.
+    assert ("One test year" in sec) or ("Two test years" in sec), \
+        "the scope section no longer says how many test years there are"
 
 
 def test_the_app_reads_the_report_rather_than_hard_coding_it():

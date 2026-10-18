@@ -1,0 +1,223 @@
+# ============================================================================
+# config_deploy.yaml - STEP 12. Every setting the deployed system needs.
+#
+# config.yaml is the paper's evidence and is never edited again. This file is
+# the deployment layer on top of it: dates, paths, the schedule, the API, the
+# drift limits and the promotion gate. Both are loaded together:
+#
+#     from src.deploy.common import load_deploy_config
+#     DCFG = load_deploy_config()        # {"base": <config.yaml>, "deploy": ...}
+#
+# Nothing here changes a model, a threshold or a 2025 number. The deployed
+# models are models/final (trained on 2023+2024+2025) with the thresholds
+# frozen in FROZEN.md, and no setting below retunes anything on 2026.
+# ============================================================================
+
+deploy:
+  name: "DO Early Warning - deployed"
+
+  # -------------------------------------------------------------------------
+  # Which models are deployed.
+  #
+  # `stage` is the key in predict_service.STAGE_DIRS, so the deployed folder
+  # comes from config.yaml (final_test.stage3_dir) rather than being written
+  # twice. `version_prefix` names the version id; the digest after it is the
+  # SHA-256 over the per-file hashes of that folder, so the id changes if and
+  # only if a model file changes.
+  # -------------------------------------------------------------------------
+  models:
+    stage: "final"
+    version_prefix: "final"
+    version_digest_chars: 12
+    model_card: "models/final/MODEL_CARD.md"
+    archive_dir: "models/archive"
+
+  # -------------------------------------------------------------------------
+  # The 2026 test, pre-registered in reports/plan_2026.md.
+  #
+  # `end` is resolved at run time as (today UTC - era5_lag_days), and then
+  # trimmed further to the last day on which every ERA5 variable is complete
+  # for every station, so the window never depends on a partial day. The
+  # value written into the plan before any 2026 DO value was read was
+  # 2026-10-13; `end_frozen` records it, and the scorer refuses to score a
+  # window that ends later than the plan allows.
+  # -------------------------------------------------------------------------
+  test_2026:
+    start: "2026-01-01"
+    end_frozen: "2026-10-13"       # resolved 2026-10-18, before reading 2026 DO
+    era5_lag_days: 5               # Open-Meteo's archive lag for true ERA5
+    plan_file: "reports/plan_2026.md"
+    results_dir: "results/live_2026"
+    # The live-data penalty: the last N days of the test window are scored
+    # twice over the same hours, once on ERA5 weather and once on the
+    # forecast API's recent past.
+    penalty_days: 30
+    penalty_dir: "results/live_2026/penalty"
+
+  # -------------------------------------------------------------------------
+  # Walk-forward: more than one test year. Existing predictions are reused
+  # wherever they exist; nothing is retuned.
+  # -------------------------------------------------------------------------
+  walk_forward:
+    out_csv: "results/live_2026/walk_forward.csv"
+    rows:
+      - train: "2023"
+        test: "2024"
+        source: "oof_2024"
+        note: "not clean: 2024 was the tuning year"
+      - train: "2023-2024"
+        test: "2025"
+        source: "test_2025"
+        note: "the frozen result"
+      - train: "2023-2025"
+        test: "2026"
+        source: "live_2026"
+        note: "deployed models, pre-registered"
+
+  # -------------------------------------------------------------------------
+  # Live data. Written to data/live only - data/raw and data/processed are
+  # the paper's inputs and are never touched.
+  # -------------------------------------------------------------------------
+  data:
+    root: "data/live"
+    raw: "data/live/raw"
+    water: "data/live/raw/water"
+    weather: "data/live/raw/weather"
+    air: "data/live/raw/air"
+    # the forecast-API tail, kept apart from the ERA5 archive files so the
+    # two can be compared hour for hour
+    weather_fc: "data/live/raw/weather_forecast"
+    air_fc: "data/live/raw/air_forecast"
+    processed: "data/live/processed"
+    hourly: "data/live/processed/hourly_{mode}.parquet"
+    features: "data/live/processed/features_{mode}.parquet"
+    sources: "data/live/processed/sources_{mode}.parquet"
+    fetch_log: "data/live/fetch_log_{mode}.csv"
+    skipped: "data/live/skipped_{mode}.csv"
+
+  # -------------------------------------------------------------------------
+  # Fetching. Several stations at once, politely, with retries and a cache,
+  # so a re-run only asks for what is missing.
+  # -------------------------------------------------------------------------
+  fetch:
+    max_workers: 5              # 4-6: enough to be quick, few enough to be polite
+    retries: 5
+    backoff_seconds: 2.0        # doubled on each retry, plus jitter
+    backoff_max_seconds: 60.0
+    timeout: 120
+    min_seconds_between_calls: 0.2   # per worker
+    chunk_days: 400             # one request per chunk of history
+    cache: true
+    # history before the window starts, so every lag and rolling window (the
+    # longest is a 168 h rain sum) is full on the window's first hour
+    preroll_hours: 336
+    # water is fetched a little past the window so the last rows' 48 h
+    # targets exist and can be scored
+    water_tail_days: 3
+    # live mode: how many days of history to pull so that a 72 h sequence and
+    # every lag / rolling window (the longest is a 168 h rain sum) are full
+    live_days: 45
+    # how many recent days the forecast API is asked for in live mode
+    forecast_past_days: 14
+    # the live-data penalty needs the forecast feed to reach back over the
+    # whole penalty window, not just the hours ERA5 is missing
+    penalty_past_days: 60   # reaches back over the penalty window AND its pre-roll
+    # ERA5 has no data for roughly the last 5 days; those hours come from the
+    # forecast API instead and are tagged as such.
+    weather_model_recent: "ecmwf_ifs025"   # the only forecast model carrying
+                                           # soil_moisture_0_to_7cm
+    urls:
+      open_meteo_forecast: "https://api.open-meteo.com/v1/forecast"
+      open_meteo_air: "https://air-quality-api.open-meteo.com/v1/air-quality"
+    # the tag written into the `weather_source` column for each hour
+    source_tags:
+      era5: "era5_archive"
+      forecast: "forecast_api"
+      missing: "none"
+
+  # -------------------------------------------------------------------------
+  # Production runs.
+  # -------------------------------------------------------------------------
+  run:
+    results_dir: "results/live"
+    forecast_glob: "forecast_*.csv"
+    forecast_file: "forecast_{stamp}.csv"
+    stamp_format: "%Y%m%dT%H%M%SZ"
+    log_parquet: "results/live/log.parquet"
+    run_log: "results/live/runs.csv"
+    # the schema of every forecast row, in this order
+    columns: ["station", "issued_at", "horizon", "valid_at", "pred_do_mgl",
+              "p_low", "tau", "warning", "model_version", "weather_source",
+              "data_age_hours"]
+    schedule: "hourly"
+    batch_file: "run_live.bat"
+
+  # -------------------------------------------------------------------------
+  # Monitoring. Scores the logged forecasts once the real DO for their valid
+  # time has arrived.
+  # -------------------------------------------------------------------------
+  monitor:
+    window_days: 30
+    out_csv: "results/live/monitor.csv"
+    drift_csv: "results/live/drift.csv"
+    # performance drift: the promise in config.yaml is 2%; over a 30-day
+    # window anything above it is flagged.
+    max_false_alarm_rate: 0.02
+    # data drift: a feature is out of range when it falls outside the
+    # training minimum / maximum by more than this fraction of the training
+    # spread. Flagged when more than `max_out_of_range_share` of rows do.
+    range_tolerance: 0.05
+    max_out_of_range_share: 0.01
+    # features watched for drift: the inputs a sensor fault would move first
+    drift_features: ["do_mgl", "water_temp_c", "spec_cond_uscm", "ph",
+                     "turbidity_fnu", "discharge_cfs", "temperature_2m",
+                     "precipitation", "shortwave_radiation"]
+    min_rows: 24                # below this a window is reported, not judged
+
+  # -------------------------------------------------------------------------
+  # Safe retraining. The frozen settings and round counts are reused exactly;
+  # nothing is tuned. A new model only replaces models/final if it is at
+  # least as good on the most recent months it did not train on.
+  # -------------------------------------------------------------------------
+  retrain:
+    cutoff: null                # null -> the last complete day of live data
+    holdout_months: 2           # the most recent months the new model never saw
+    gate_metrics: ["rmse", "false_alarm_rate"]
+    gate_tolerance:
+      rmse: 0.0                 # new RMSE must be <= old RMSE + this
+      false_alarm_rate: 0.0     # new false-alarm rate must be <= old + this
+    gate_horizons: "all"        # every horizon must pass
+    out_dir: "models/candidate"
+    report: "results/live/retrain.json"
+    dry_run_dir: "results/live/retrain_dry_run"
+
+  # -------------------------------------------------------------------------
+  # The API (src/deploy/api.py). It only reads the latest forecast file.
+  # -------------------------------------------------------------------------
+  api:
+    host: "127.0.0.1"
+    port: 8000
+    title: "DO early-warning API"
+    endpoints: ["/health", "/warnings", "/forecast/{station}"]
+
+  # -------------------------------------------------------------------------
+  # Bootstrap confidence intervals, run across all CPU cores. The settings
+  # themselves stay in config.yaml (ensemble.bootstrap); this only says how
+  # the work is split, and the split cannot change the answer: each resample
+  # draws from its own seeded generator.
+  # -------------------------------------------------------------------------
+  bootstrap:
+    n_jobs: -1
+    batch_size: 50              # resamples per parallel task
+    backend: "loky"
+
+  # -------------------------------------------------------------------------
+  # Compute. Deep members on the GPU for inference, trees on CPU with every
+  # core, because their predictions must match the saved models exactly.
+  # -------------------------------------------------------------------------
+  compute:
+    deep_device: "auto"         # "auto" -> cuda when available, else cpu
+    deep_batch_size: 2048       # inference only, no gradients
+    cudnn_benchmark: true
+    tree_n_jobs: -1
+    feature_workers: -1         # processes used to build features per station

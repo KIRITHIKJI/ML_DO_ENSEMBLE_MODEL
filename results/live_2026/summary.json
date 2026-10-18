@@ -1,0 +1,64 @@
+{
+  "window": [
+    "2026-01-01 00:00:00",
+    "2026-10-13 23:00:00"
+  ],
+  "rows": 181203,
+  "stations_scored": [
+    "01302020",
+    "01484080",
+    "01484525",
+    "02110500",
+    "02110550",
+    "02110701",
+    "02110704",
+    "02135000",
+    "02198840",
+    "02198920",
+    "02198950",
+    "02198955",
+    "02239501",
+    "02264051",
+    "02322700",
+    "03290500",
+    "03353200",
+    "03353415",
+    "03430200",
+    "03431083",
+    "03612600",
+    "040851385",
+    "05474500",
+    "07048600",
+    "07049000",
+    "07239450",
+    "08048000",
+    "11273400"
+  ],
+  "stations_skipped": [
+    {
+      "station": "02292900",
+      "stage": "fetch",
+      "reason": "the DO sensor reported nothing in the window"
+    },
+    {
+      "station": "02276998",
+      "stage": "fetch",
+      "reason": "the DO sensor reported nothing in the window"
+    }
+  ],
+  "model_version": "final-35ab6d1d27d1",
+  "model_folder": "final",
+  "verdict": "PARTIAL",
+  "verdict_reason": "the 2% false-alarm promise holds (1.65% at 24 h), but rmse at 24 h falls outside the 2025 interval",
+  "events": 204,
+  "warned": 106,
+  "median_lead_hours": 18.5,
+  "timings_seconds": {
+    "predict": 295.7,
+    "score": 47.8,
+    "predictions": 5.6,
+    "lead times": 0.3,
+    "bootstrap 2026": 48.0,
+    "bootstrap 2025 reference": 50.9
+  }
+}

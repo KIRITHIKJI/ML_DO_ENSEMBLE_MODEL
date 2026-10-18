@@ -52,12 +52,18 @@ FULL_INDEX = pd.date_range(CFG["period"]["start"],
                            freq=CL["resample_rule"])
 
 
-def to_hourly(path):
-    """Read one raw water file and average the 15-minute readings per hour."""
+def to_hourly(path, index=None):
+    """
+    Read one raw water file and average the 15-minute readings per hour.
+
+    `index` is the hourly spine to put the station on. It defaults to the
+    project's 2023-2025 period (FULL_INDEX); step 12's deployment layer
+    passes the live window instead, so the same cleaning code serves both.
+    """
     df = pd.read_csv(path, parse_dates=["time"]).set_index("time").sort_index()
     df = df.apply(pd.to_numeric, errors="coerce")
     hourly = df.resample(CL["resample_rule"]).mean()
-    return hourly.reindex(FULL_INDEX)
+    return hourly.reindex(FULL_INDEX if index is None else index)
 
 
 def apply_ranges(df):
@@ -136,9 +142,22 @@ def fill_short_gaps(df, cols):
     return df
 
 
-def clean_station(site, water_path, weather_path, air_path):
-    """Clean one station and return its hourly table (no station column yet)."""
-    w = to_hourly(water_path)
+def clean_station(site, water_path, weather_path, air_path, index=None,
+                  drop_variables=None):
+    """
+    Clean one station and return its hourly table (no station column yet).
+
+    `index`          the hourly spine (defaults to the 2023-2025 period).
+    `drop_variables` the variables to blank out at this station. The default
+                     decides it here from the TRAIN years, which is what
+                     step 2 did. Step 12 passes the list step 2 already
+                     decided (data/interim/dropped_variables.csv) instead,
+                     because a deployed model must be fed the same columns it
+                     was trained on - re-deciding on a live window could
+                     hand it a column that was all-NaN in training.
+    """
+    index = FULL_INDEX if index is None else index
+    w = to_hourly(water_path, index)
     # keep only the water variables we know about, in a fixed order
     for v in WATER_VARS:
         if v not in w.columns:
@@ -156,19 +175,29 @@ def clean_station(site, water_path, weather_path, air_path):
 
     # Variables that are mostly missing in the TRAIN years are unusable.
     dropped = []
-    train_mask = w.index.year.isin(TRAIN_YEARS)
-    for v in WATER_VARS:
-        share_missing = float(w.loc[train_mask, v].isna().mean())
-        if share_missing > CL["drop_variable_if_missing_above"]:
-            w[v] = np.nan
-            dropped.append({"site_no": site, "variable": v,
-                            "missing_in_train": round(share_missing, 3)})
+    if drop_variables is None:
+        train_mask = w.index.year.isin(TRAIN_YEARS)
+        for v in WATER_VARS:
+            share_missing = float(w.loc[train_mask, v].isna().mean())
+            if share_missing > CL["drop_variable_if_missing_above"]:
+                w[v] = np.nan
+                dropped.append({"site_no": site, "variable": v,
+                                "missing_in_train": round(share_missing, 3)})
+    else:
+        for v in drop_variables:
+            if v in w.columns:
+                w[v] = np.nan
+                dropped.append({"site_no": site, "variable": v,
+                                "missing_in_train": None})
 
     # weather and air are already hourly and gapless
     wx = pd.read_csv(weather_path, parse_dates=["time"]).set_index("time").sort_index()
     aq = pd.read_csv(air_path, parse_dates=["time"]).set_index("time").sort_index()
-    wx = wx.reindex(FULL_INDEX)[WEATHER_VARS]
-    aq = aq.reindex(FULL_INDEX)[AIR_VARS]
+    # the same hourly spine as the water, so the three line up exactly; a
+    # different index here would union in the concat below and leave the
+    # weather and air columns NaN for every hour the water actually covers
+    wx = wx.reindex(index)[WEATHER_VARS]
+    aq = aq.reindex(index)[AIR_VARS]
 
     out = pd.concat([w, masks, wx, aq], axis=1)
     out.index.name = "time"
