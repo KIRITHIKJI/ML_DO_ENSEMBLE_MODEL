@@ -504,10 +504,41 @@ def test_the_card_is_honest_about_sensor_faults():
         "in" in card
 
 
+def _tidal_bullet():
+    """The one Limitations bullet about the tidal stations."""
+    hits = [line for line in _card().splitlines()
+            if line.startswith("- ") and "tidal stations" in line]
+    assert len(hits) == 1, "expected exactly one tidal limitation"
+    return hits[0]
+
+
 def test_the_card_warns_about_the_tidal_stations():
     from src.deploy.model_card import TIDAL_STATIONS
-    card = _card()
+    bullet = _tidal_bullet()
     for station in TIDAL_STATIONS:
-        assert station in card, f"the card does not name {station}"
-    assert "twice a day" in card
-    assert "not deterioration events" in card
+        assert station in bullet, \
+            f"the tidal limitation does not name {station}"
+    assert "twice-daily cycle" in bullet
+    assert "`early_warning`" in bullet
+    assert "the forecast is correct" in bullet
+    assert "not deterioration events" in bullet
+
+
+def test_the_tidal_limitation_claims_no_mechanism():
+    """
+    Step 12d. The card used to say the DO dips "as salt water comes up the
+    estuary". That is a cause, and this project never tested one: the data
+    shows a twice-daily cycle and nothing about what drives it. The card
+    reports the cycle and says outright that the mechanism is untested.
+    """
+    card, bullet = _card(), _tidal_bullet()
+    assert "salt water" not in card, \
+        "the card claims a mechanism the project never tested"
+    for claim in ("saline", "salinity", "because the tide", "driven by"):
+        assert claim not in bullet, \
+            f"the tidal limitation still explains the cycle: {claim!r}"
+    assert "no mechanism is claimed" in bullet
+
+    src = open(project_path("src", "deploy", "model_card.py"),
+               encoding="utf-8").read()
+    assert "salt water" not in src

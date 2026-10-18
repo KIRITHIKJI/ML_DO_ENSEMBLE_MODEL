@@ -28,8 +28,9 @@ HORIZONS = D.HORIZONS
 FINAL = D.FINAL_SYSTEM
 
 # The stations on the tidal reach of the Savannah estuary. Their DO
-# rises and falls twice a day with the tide; the fall is real, the
-# forecast of it is right, and it is not a deterioration event. Named
+# follows a twice-daily cycle; the dips in it are real, the forecasts of
+# them are right, and they are not deterioration events. Why the oxygen
+# moves that way was never tested here, so nothing claims a cause. Named
 # here so the limitation that says so can name them too.
 TIDAL_STATIONS = ["02198920", "02198950"]
 
@@ -357,17 +358,17 @@ def build():
         f"straight in; `python -m src.deploy.monitor` flags features that "
         f"leave their training range, which is a warning about the data, "
         f"not a repair of it.",
-        f"- **A predictable daily cycle can look like an event.** At "
-        f"the tidal stations on the lower Savannah ({TIDAL_NOTE}) the DO "
-        f"dips twice a day as "
-        f"salt water comes up the estuary, and the rule fires on those "
-        f"dips: they appear as rows whose `alert_type` is "
-        f"`early_warning`, and the forecast is correct. They are "
-        f"correct forecasts of a normal cycle, not deterioration "
-        f"events. Nothing here tells the two apart, so a count of "
-        f"early warnings at a tidal station is not a count of events, "
-        f"and an operator there should read the tide alongside the "
-        f"row.",
+        f"- **A predictable daily cycle can look like an event.** At the "
+        f"tidal stations on the lower Savannah ({TIDAL_NOTE}) the DO "
+        f"follows a twice-daily cycle, and the rule fires on the dips in "
+        f"it: they appear as rows whose `alert_type` is `early_warning`, "
+        f"and the forecast is correct. They are correct forecasts of a "
+        f"normal cycle, not deterioration events. Nothing here tells the "
+        f"two apart, so a count of early warnings at a tidal station is "
+        f"not a count of events, and an operator there should read the "
+        f"tide alongside the row. Why the oxygen moves on that cycle is "
+        f"not something this project tested, and no mechanism is claimed "
+        f"here.",
         f"- **An alert is not automatically an early warning.** "
         f"`alert_type` separates water predicted to go Low "
         f"(`early_warning`) from water already below the threshold "
