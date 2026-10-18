@@ -27,6 +27,12 @@ FT = CFG["final_test"]
 HORIZONS = D.HORIZONS
 FINAL = D.FINAL_SYSTEM
 
+# The stations on the tidal reach of the Savannah estuary. Their DO
+# rises and falls twice a day with the tide; the fall is real, the
+# forecast of it is right, and it is not a deterioration event. Named
+# here so the limitation that says so can name them too.
+TIDAL_STATIONS = ["02198920", "02198950"]
+
 
 def read(path, **kw):
     full = project_path(path)
@@ -84,6 +90,10 @@ def build():
             m &= df["rule"] == rule
         row = df[m]
         return float(row[col].iloc[0]) if len(row) else float("nan")
+
+    tidal = stations[stations["site_no"].astype(str).isin(TIDAL_STATIONS)]
+    TIDAL_NOTE = (" and ".join(tidal["site_no"].astype(str))
+                  or " and ".join(TIDAL_STATIONS))
 
     L = []
     L.append("# Model card - DO early warning, deployed models\n")
@@ -347,6 +357,17 @@ def build():
         f"straight in; `python -m src.deploy.monitor` flags features that "
         f"leave their training range, which is a warning about the data, "
         f"not a repair of it.",
+        f"- **A predictable daily cycle can look like an event.** At "
+        f"the tidal stations on the lower Savannah ({TIDAL_NOTE}) the DO "
+        f"dips twice a day as "
+        f"salt water comes up the estuary, and the rule fires on those "
+        f"dips: they appear as rows whose `alert_type` is "
+        f"`early_warning`, and the forecast is correct. They are "
+        f"correct forecasts of a normal cycle, not deterioration "
+        f"events. Nothing here tells the two apart, so a count of "
+        f"early warnings at a tidal station is not a count of events, "
+        f"and an operator there should read the tide alongside the "
+        f"row.",
         f"- **An alert is not automatically an early warning.** "
         f"`alert_type` separates water predicted to go Low "
         f"(`early_warning`) from water already below the threshold "
@@ -365,6 +386,7 @@ def build():
 
     # ------------------------------------------------------------ running
     L.append("\n## How it is run and watched\n")
+    A = D.RUN["alert_types"]
     L.append(
         f"| | |\n|---|---|\n"
         f"| forecast | `python -m src.deploy.run` → "
@@ -375,9 +397,15 @@ def build():
         f"| stale-data guard | no forecast when the newest DO reading is "
         f"older than **{float(D.RUN['max_data_age_hours']):g} h**; the row "
         f"carries `{D.RUN['stale_status']}` and never a warning |\n"
-        f"| alert types | "
-        + ", ".join(f"`{v}`" for v in D.RUN["alert_types"].values())
-        + " |\n"
+        f"| alert types | `{A['early_warning']}` safe water predicted to "
+        f"go Low, the only row an operator could not read off the sensor; "
+        f"`{A['ongoing_low']}` already below {low} mg/L and the rule "
+        f"fires; `{A['none']}` forecast made, rule did not fire; "
+        f"`{A['stale']}` no forecast was made |\n"
+        f"| the class now | `class_now` is written as "
+        + "/".join(D.CLASS_NAMES)
+        + ", not as 0/1/2. Forecast files written before that change carry "
+          "the numbers and are still read |\n"
         f"| monitoring | `python -m src.deploy.monitor` → "
         f"`{D.MON['out_csv']}`, `{D.MON['drift_csv']}` |\n"
         f"| drift limits | false alarms > {D.MON['max_false_alarm_rate']:.0%} "

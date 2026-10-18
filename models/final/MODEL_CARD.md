@@ -105,7 +105,9 @@ Every hour in every live file is tagged with its source, so a forecast made on f
 - **24 h is the hard horizon.** 6 and 12 h are much easier - the river's own recent history carries most of the signal - and 48 h is harder still.
 - **Stations differ enormously.** Per-station onset recall spans most of the possible range; a station-level table is in the report and in the app. A single headline number is an average over very unlike rivers.
 - **The deep members are not bit-for-bit reproducible.** cuDNN has no deterministic recurrent kernel, so the system averages three seeds; the remaining spread was measured rather than assumed (design check 6 in the report).
-- **Sensor faults are not detected.** A stuck or drifting DO sensor is fed straight in. `python -m src.deploy.monitor` flags features that leave their training range, which is a warning about the data, not a repair of it.
+- **A sensor that STOPS reporting is caught; one that lies is not.** Past 6 h of silence a station gets `status` "stale - sensor offline" and no prediction at all, because every input is a lag of the DO it last sent. A stuck or drifting sensor that keeps reporting is fed straight in; `python -m src.deploy.monitor` flags features that leave their training range, which is a warning about the data, not a repair of it.
+- **A predictable daily cycle can look like an event.** At the tidal stations on the lower Savannah (02198920 and 02198950) the DO dips twice a day as salt water comes up the estuary, and the rule fires on those dips: they appear as rows whose `alert_type` is `early_warning`, and the forecast is correct. They are correct forecasts of a normal cycle, not deterioration events. Nothing here tells the two apart, so a count of early warnings at a tidal station is not a count of events, and an operator there should read the tide alongside the row.
+- **An alert is not automatically an early warning.** `alert_type` separates water predicted to go Low (`early_warning`) from water already below the threshold (`ongoing_low`), which an operator can read off the sensor. Only the first is what this model is for, and the monitoring scores it on its own.
 - **Gaps are carried forward, not interpolated**, for at most 3 h. Longer gaps stay missing and the hour is not forecast; `data_age_hours` in every forecast row says how stale the newest reading was.
 - **Air quality earns almost nothing.** The ablation in the report shows weather pays for itself and CAMS adds very little - worth knowing before anyone pays for an air-quality feed.
 
@@ -116,6 +118,9 @@ Every hour in every live file is tagged with its source, so a forecast made on f
 | forecast | `python -m src.deploy.run` → `results/live/forecast_<UTC timestamp>.csv` |
 | schedule | `run_live.bat`, hourly, Windows Task Scheduler |
 | log | `results/live/log.parquet` |
+| stale-data guard | no forecast when the newest DO reading is older than **6 h**; the row carries `stale - sensor offline` and never a warning |
+| alert types | `early_warning` safe water predicted to go Low, the only row an operator could not read off the sensor; `ongoing_low` already below 5.0 mg/L and the rule fires; `none` forecast made, rule did not fire; `stale` no forecast was made |
+| the class now | `class_now` is written as Low/Medium/Good, not as 0/1/2. Forecast files written before that change carry the numbers and are still read |
 | monitoring | `python -m src.deploy.monitor` → `results/live/monitor.csv`, `results/live/drift.csv` |
 | drift limits | false alarms > 2% over 30 days; features outside the training range |
 | API | `python -m src.deploy.api` → /health, /warnings, /forecast/{station} |

@@ -29,6 +29,13 @@ Two things the rows carry that are worth knowing before reading them:
                 the system), ongoing_low (already below the threshold and
                 the rule fires, which an operator can read off the sensor),
                 none, or stale.
+  `class_now`   the class of the DO reading the forecast was made from,
+                written as "Low", "Medium" or "Good" rather than 0.0, 1.0
+                or 2.0. Nobody reading a csv should have to remember which
+                end of the scale 0 is. Files written before this change
+                carry the numbers, and everything that reads the column
+                (`class_code` below, the monitor, the API and the app)
+                accepts either.
 
 Nothing is trained and nothing is tuned. The forecast comes from
 `predict_service.Forecaster`, the same object the app uses, so a row in the
@@ -105,12 +112,72 @@ def split_by_age(rows, issued_at, max_age_hours=None):
             ages)
 
 
+# ---------------------------------------------------------------------------
+# The class of the water right now, in words
+# ---------------------------------------------------------------------------
+# A live forecast file is read by people, not only by the scorer, so
+# `class_now` goes out as "Low" / "Medium" / "Good". Every forecast written
+# before this change carries 0.0 / 1.0 / 2.0 instead, and those files must
+# keep working: `class_code` reads both, and it is the only place that
+# knows the difference.
+# ---------------------------------------------------------------------------
+_LABEL_OF_CODE = {i: name for i, name in enumerate(CLASS_NAMES)}
+_CODE_OF_LABEL = {name.lower(): i for i, name in enumerate(CLASS_NAMES)}
+
+
+def class_code(value):
+    """
+    A DO class as 0 / 1 / 2, from either format, or None when there is no
+    class there.
+
+    Accepts the word ("Low", case-insensitively), the code (0, 0.0, and
+    "0.0" as a csv read back without a dtype), and every flavour of
+    missing. Nothing downstream should test the column for itself.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in _CODE_OF_LABEL:
+            return _CODE_OF_LABEL[text.lower()]
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    try:
+        if pd.isna(value):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def class_label(value):
+    """One DO class as a word, from a code, a word, or nothing."""
+    code = class_code(value)
+    return None if code is None else _LABEL_OF_CODE[code]
+
+
+def class_labels(do_values):
+    """
+    DO readings in mg/L -> ["Low", "Medium", "Good", ...]: the `class_now`
+    column as it is written to a forecast file.
+
+    A missing reading stays missing - None, which a csv writes as an empty
+    field - rather than a word that would claim to know something about a
+    river nobody measured.
+    """
+    return [None if c != c else _LABEL_OF_CODE[int(c)]
+            for c in to_class(do_values)]
+
+
 def classify_alert(class_now, warning, stale=False):
     """
     Which of the four kinds of row this is.
 
-    `class_now` is the class of the DO reading the forecast was made from
-    (0 Low, 1 Medium, 2 Good), `warning` whether the frozen rule fired.
+    `class_now` is the class of the DO reading the forecast was made from,
+    as a word ("Low") or as the old code (0); `warning` whether the frozen
+    rule fired.
 
       stale          no prediction was made at all
       ongoing_low    the water is ALREADY below the threshold and the rule
@@ -129,8 +196,7 @@ def classify_alert(class_now, warning, stale=False):
         return ALERT["stale"]
     if not bool(warning):
         return ALERT["none"]
-    if class_now is not None and not pd.isna(class_now) \
-            and int(class_now) == LOW_CLASS:
+    if class_code(class_now) == LOW_CLASS:
         return ALERT["ongoing_low"]
     return ALERT["early_warning"]
 
@@ -182,7 +248,7 @@ def stale_frame(stale, sources, issued_at, version, max_age_hours=None):
             "alert_type": ALERT["stale"],
             "observed_at": stale["time"].to_numpy(),
             "do_now_mgl": stale[D.DO].to_numpy(dtype="float64"),
-            "class_now": to_class(stale[D.DO]),
+            "class_now": class_labels(stale[D.DO]),
             "method": f"none - reading older than {limit:g} h",
         }))
     return pd.concat(frames, ignore_index=True)
@@ -239,7 +305,7 @@ def forecast(rows, panel, sources, issued_at, batch_size=None,
                 else pd.DataFrame(columns=COLUMNS)), info
 
     out = f.predict_rows(use, seq)
-    class_now = to_class(use[D.DO])
+    class_now = class_labels(use[D.DO])
     ages = data_age_hours(use["time"], issued_at)
     frames = []
     for h in HORIZONS:
@@ -290,17 +356,34 @@ def write_forecast(frame, issued_at):
     return path
 
 
+def as_labels(frame):
+    """
+    A copy of `frame` with `class_now` written as words, whichever format
+    it arrived in. Used on the existing log before anything is appended to
+    it: a parquet column holding 1.0 in the old rows and "Medium" in the
+    new ones has no type, and pyarrow would refuse the file.
+    """
+    if "class_now" not in frame.columns:
+        return frame
+    out = frame.copy()
+    out["class_now"] = [class_label(v) for v in out["class_now"]]
+    return out
+
+
 def append_log(frame):
     """
     Append to results/live/log.parquet. Re-running the same hour replaces
     that hour's rows rather than doubling them, so an hourly schedule that
     fires twice cannot corrupt the monitoring input.
+
+    A log written before `class_now` became readable is converted as it is
+    read, so one file never carries both formats.
     """
     path = project_path(RUN["log_parquet"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    new = frame.copy()
+    new = as_labels(frame)
     if os.path.exists(path):
-        old = pd.read_parquet(path)
+        old = as_labels(pd.read_parquet(path))
         keys = set(zip(new["station"], new["issued_at"], new["horizon"]))
         keep = [k not in keys for k in zip(old["station"], old["issued_at"],
                                            old["horizon"])]
