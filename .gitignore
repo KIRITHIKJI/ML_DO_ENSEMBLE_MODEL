@@ -69,3 +69,8 @@ models/archive/
 !models/final/
 models/final/*
 !models/final/MODEL_CARD.md
+
+# Colab bundle made by make_colab_zip.py (too big for git)
+ML_MAIN_V2_colab.zip
+results/notebook_run/
+do_demo_pack.npz
