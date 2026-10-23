@@ -9,6 +9,14 @@ warning thresholds.
 
 Nothing here trains, tunes or scores. It only loads and predicts.
 
+Which combiner answers depends on the `final_system_v21` flag in
+config_v21.yaml (its own file, because config.yaml is the paper's frozen
+evidence). With the flag set, ensemble_v21 (src/models/ensemble_v21.py)
+serves the task and horizon where models/ensemble_v21/weights.json records
+that it matched or beat stacking on 2024, and stacking serves the rest; with
+the flag absent, stacking serves everything, exactly as before. Each
+horizon's result says which one answered, in `method` and `method_by_task`.
+
     from src.models.predict_service import Forecaster
     f = Forecaster(stage="final")          # or "stage2"
     out = f.predict_station("02198950", "2025-07-15 12:00")
@@ -50,6 +58,30 @@ def load_thresholds():
 
 def tau_for(method, h):
     return load_thresholds().get(f"{method}_h{h}", {}).get("tau")
+
+
+@lru_cache(maxsize=1)
+def v21_weights():
+    """
+    The ensemble_v21 selection, or None when the flag is not set or the
+    weights have not been produced. Cached: the file is small and constant.
+    """
+    from src.models.ensemble_v21 import flag_is_set, load_weights
+    return load_weights() if flag_is_set() else None
+
+
+def v21_for(task, h):
+    """
+    (weights, tau) when ensemble_v21 should serve this task and horizon, or
+    None to fall back to `final_system` (stacking). The weights file records
+    per task and horizon whether v21 matched or beat stacking on 2024; where
+    it did not, this returns None.
+    """
+    saved = v21_weights()
+    if saved is None:
+        return None
+    from src.models.ensemble_v21 import weights_for
+    return weights_for(task, h, saved)
 
 
 def classify(do_value):
@@ -197,16 +229,41 @@ class Forecaster:
             # the stacking meta-model expects all five members in order
             complete = used == MEMBERS
             if complete:
-                pred_reg = self._stack("regression", h, reg, proba)
-                pred_proba = self._stack("classification", h, proba, proba) \
-                    if False else self._stack("classification", h, reg, proba)
-                method = "stacking"
+                # ensemble_v21 where the flag is set AND where it matched or
+                # beat stacking on 2024; stacking everywhere else. The two
+                # tasks are decided separately, because the 2024 comparison
+                # came out differently for them.
+                from src.models.ensemble_v21 import blend as v21_blend
+                how = {}
+                v_reg = v21_for("regression", h)
+                if v_reg is None:
+                    pred_reg = self._stack("regression", h, reg, proba)
+                    how["regression"] = "stacking"
+                else:
+                    pred_reg = v21_blend("regression", v_reg[0], reg, proba)
+                    how["regression"] = "ensemble_v21"
+
+                v_cls = v21_for("classification", h)
+                if v_cls is None:
+                    pred_proba = self._stack("classification", h, reg, proba)
+                    how["classification"] = "stacking"
+                    tau = tau_for("stacking", h)
+                else:
+                    pred_proba = v21_blend("classification", v_cls[0], reg,
+                                           proba)
+                    how["classification"] = "ensemble_v21"
+                    tau = v_cls[1]
+                method = (how["regression"] if how["regression"]
+                          == how["classification"]
+                          else f"{how['regression']} (DO) + "
+                               f"{how['classification']} (class)")
             else:
                 pred_reg = reg.mean(axis=1)
                 pred_proba = proba.mean(axis=1)
                 method = "average of " + ", ".join(used)
+                how = {"regression": method, "classification": method}
+                tau = tau_for("simple_average", h)
 
-            tau = tau_for("stacking" if complete else "simple_average", h)
             p_low = pred_proba[:, 0]
             if tau is None:
                 warn = pred_proba.argmax(axis=1) == 0
@@ -214,6 +271,9 @@ class Forecaster:
                 warn = p_low >= tau
             out[h] = {"do": pred_reg, "proba": pred_proba, "p_low": p_low,
                       "warn": warn, "tau": tau, "method": method,
+                      # which combiner answered each task, so a caller never
+                      # has to parse `method` to find out
+                      "method_by_task": how,
                       "members": used,
                       "member_reg": dict(zip(used, reg.T)),
                       "member_p_low": dict(zip(used, proba[:, :, 0].T)),

@@ -15,8 +15,9 @@ import zipfile
 INCLUDE = [
     "config.yaml", "requirements.txt", "src",
     "data/processed", "data/interim/hourly.parquet", "data/raw/stations.csv",
-    "results/test", "results/live_2026/walk_forward.csv",
+    "results/test", "results/test_v21", "results/live_2026/walk_forward.csv",
     "models/ensemble/warning_thresholds.json", "models/ensemble/ablation_thresholds.json",
+    "models/ensemble_v21/weights.json",
     "models/notebook_run", "notebooks",
 ]
 SKIP_DIRS = {"__pycache__", ".ipynb_checkpoints", "plots"}

@@ -1,0 +1,31 @@
+# ============================================================================
+# config_v21.yaml - the switch for the upgraded ensemble, ensemble_v21.
+#
+# This sits BESIDE config.yaml and changes nothing in it. config.yaml is the
+# paper's evidence and is byte-identical to the commit that introduced
+# FROZEN.md (tests/test_deploy.py checks exactly that), so a new setting has
+# to arrive in its own file - the same way step 12 added config_deploy.yaml.
+#
+# Read by src/models/ensemble_v21.py (flag_is_set) and through it by
+# src/models/predict_service.py.
+# ============================================================================
+
+# Serve ensemble_v21 (src/models/ensemble_v21.py) instead of
+# `final_system: stacking` - but ONLY for the task and horizon where
+# models/ensemble_v21/weights.json records `beats_stacking_2024: true`, which
+# is the 2024 comparison on exactly the rows and the rule both were scored
+# by. Everywhere else predict_service falls back to stacking, so the flag can
+# never make a forecast worse on the evidence that was available when it was
+# chosen.
+#
+# As the weights stand that means ensemble_v21 for CLASSIFICATION at all four
+# horizons (macro F1 on 2024, warning rule: 0.9051 / 0.8970 / 0.8837 / 0.8494
+# against stacking's 0.9026 / 0.8939 / 0.8828 / 0.8474) and stacking for
+# REGRESSION at all four, where the Ridge meta-model fits the squared error
+# more closely than a simplex of member weights can reach.
+#
+# Delete this file, or comment the line out, to go back to stacking
+# everywhere. Nothing in FROZEN.md, models/ or results/ was changed to add
+# it: the frozen 2025 headline stays what it was, and ensemble_v21's own 2025
+# numbers sit beside it in results/test_v21/.
+final_system_v21: "ensemble_v21"
